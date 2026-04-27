@@ -26,9 +26,11 @@ def main() -> int:
     cfg = Config.load(config_dir / "picophone.toml", legacy_ini=Path("PicoPhone.ini"))
 
     app = QApplication(sys.argv)
-    icon_path = Path(__file__).parent.parent / "assets" / "icons" / "picophone.png"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    for cand in ("picophone.ico", "picophone.png"):
+        icon_path = Path(__file__).parent.parent / "assets" / "icons" / cand
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+            break
 
     controller = CallController(cfg)
     controller.start()

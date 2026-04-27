@@ -45,9 +45,11 @@ echo === Step 2: install build tools + runtime deps in Py 3.12 ==========
 
 REM ------------------------------------------------------------------
 echo === Step 3: locate bundled opus.dll (from pyogg) ===================
-for /f "delims=" %%I in ('"%PY312%" -c "import os, pyogg; print(os.path.join(os.path.dirname(pyogg.__file__), 'opus.dll'))"') do set OPUS_DLL=%%I
+"%PY312%" -c "import os, pyogg; open('build_opus_path.tmp','w').write(os.path.join(os.path.dirname(pyogg.__file__),'opus.dll'))" || goto :error
+set /p OPUS_DLL=<build_opus_path.tmp
+del build_opus_path.tmp
 if not exist "%OPUS_DLL%" (
-    echo opus.dll not found at %OPUS_DLL%
+    echo opus.dll not found at "%OPUS_DLL%"
     goto :error
 )
 
@@ -63,11 +65,12 @@ if exist dist\nuitka rmdir /s /q dist\nuitka
     --enable-plugin=pyside6 ^
     --include-data-files="picophone\ui\skin.qss=picophone\ui\skin.qss" ^
     --include-data-files="%OPUS_DLL%=opus.dll" ^
+    --include-data-files="assets\icons\picophone.ico=assets\icons\picophone.ico" ^
     --include-package=picophone ^
     --include-package=cryptography ^
     --include-package=opuslib ^
     --include-package=numpy ^
-    --nofollow-import-to=zeroconf ^
+    --windows-icon-from-ico="assets\icons\picophone.ico" ^
     --output-dir=dist\nuitka ^
     --output-filename=PicoPhone-Py.exe ^
     picophone\__main__.py || goto :error
