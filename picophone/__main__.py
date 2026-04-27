@@ -23,6 +23,9 @@ def main() -> int:
     config_dir.mkdir(exist_ok=True)
     setup_logging(config_dir / "picophone.log")
 
+    import logging
+    logging.getLogger().info("=== PicoPhone-Py v%s starting ===", __version__)
+
     cfg = Config.load(config_dir / "picophone.toml", legacy_ini=Path("PicoPhone.ini"))
 
     app = QApplication(sys.argv)

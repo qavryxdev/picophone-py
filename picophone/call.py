@@ -311,6 +311,9 @@ class CallController(QObject):
         """Called by SignalingServer for first-byte-binary datagrams."""
         if self._media is None:
             return
+        if self._media.pkts_recv == 0:
+            log.info("First media datagram received from %s (%d bytes, first byte=0x%02x)",
+                     addr, len(data), data[0])
         self._media.feed(data)
 
     def _on_media_payload(self, payload: bytes) -> None:
