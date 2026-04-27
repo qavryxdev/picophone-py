@@ -1,68 +1,85 @@
 @echo off
-REM Build a single-file portable PicoPhone-Py-portable.exe.
+REM Build PicoPhone-Py as a true single-file Windows executable using Nuitka.
 REM
-REM Pipeline:
-REM   1. cx_Freeze: build dist\PicoPhone-Py\ (~640 MB with all of Qt)
-REM   2. prune_dist.py: strip unused PySide6 modules (~134 MB)
-REM   3. 7-Zip SFX: pack the pruned tree behind a tiny self-extractor
-REM      stub, producing a single ~34 MB .exe that extracts to %TEMP%
-REM      and launches the GUI on double-click.
+REM Nuitka compiles Python to C, then builds a native .exe with all
+REM Python modules and Qt DLLs embedded. The result is one .exe — no
+REM sibling DLLs, no PyInstaller-style bootloader (which Avast flags as
+REM Win64:Malware-gen). On startup the launcher unpacks bundled DLLs to
+REM a private %TEMP%\onefile_* directory and loads them; that's a
+REM Nuitka implementation detail, not user-visible.
 REM
-REM Output: dist\PicoPhone-Py-portable.exe       (~34 MB, single file)
+REM Toolchain requirement: Python 3.12 (Nuitka refuses to use the
+REM auto-downloaded MinGW64 on Python 3.13). Install the official
+REM python-3.12.x-amd64.exe; this script picks it up automatically.
 REM
-REM cx_Freeze's loader exe + 7-Zip SFX stub are not flagged as
-REM Win64:Malware-gen the way PyInstaller's --onefile bundles are.
+REM Output: dist\nuitka\PicoPhone-Py.exe   (~45 MB single file)
 REM
 REM Usage: scripts\build_windows.bat
-setlocal
+setlocal enabledelayedexpansion
 
 cd /d "%~dp0\.."
 
-set NAME=PicoPhone-Py
-set SFX_DIR=%USERPROFILE%\bin\7z\installer-content
-set SEVENZR=%USERPROFILE%\bin\7z\7zr.exe
+REM ------------------------------------------------------------------
+echo === Step 1: locate Python 3.12 =====================================
+set PY312=
+for %%P in (
+    "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    "C:\Program Files\Python312\python.exe"
+    "C:\Python312\python.exe"
+) do (
+    if exist %%P set PY312=%%~P
+)
+if "%PY312%"=="" (
+    echo Python 3.12 not found.  Install python-3.12.x-amd64.exe from python.org
+    echo and re-run.  Nuitka requires Python 3.12 for auto-MinGW64 builds.
+    goto :error
+)
+echo Using: %PY312%
 
 REM ------------------------------------------------------------------
-echo === Step 1: install build tools ====================================
-python -m pip install --upgrade pip "cx_Freeze>=7.2" >nul
-python -m pip install -e . || goto :error
+echo === Step 2: install build tools + runtime deps in Py 3.12 ==========
+"%PY312%" -m pip install --upgrade pip --quiet
+"%PY312%" -m pip install --quiet --no-warn-script-location ^
+    nuitka ordered-set zstandard ^
+    PySide6 sounddevice numpy opuslib pyogg cryptography zeroconf tomli-w || goto :error
 
 REM ------------------------------------------------------------------
-echo === Step 2: cx_Freeze build ========================================
-if exist build              rmdir /s /q build
-if exist "dist\%NAME%"      rmdir /s /q "dist\%NAME%"
-if exist "dist\%NAME%-portable.exe" del /q "dist\%NAME%-portable.exe"
-
-python setup_cxfreeze.py build_exe || goto :error
-if not exist "dist\%NAME%\%NAME%.exe" (
-    echo BUILD did not produce dist\%NAME%\%NAME%.exe
+echo === Step 3: locate bundled opus.dll (from pyogg) ===================
+for /f "delims=" %%I in ('"%PY312%" -c "import os, pyogg; print(os.path.join(os.path.dirname(pyogg.__file__), 'opus.dll'))"') do set OPUS_DLL=%%I
+if not exist "%OPUS_DLL%" (
+    echo opus.dll not found at %OPUS_DLL%
     goto :error
 )
 
 REM ------------------------------------------------------------------
-echo === Step 3: prune unused Qt modules ================================
-python scripts\prune_dist.py "dist\%NAME%" || goto :error
+echo === Step 4: Nuitka onefile build (this takes 5-15 min on first run) ==
+if exist dist\nuitka rmdir /s /q dist\nuitka
+
+"%PY312%" -m nuitka ^
+    --onefile ^
+    --mingw64 ^
+    --assume-yes-for-downloads ^
+    --windows-console-mode=disable ^
+    --enable-plugin=pyside6 ^
+    --include-data-files="picophone\ui\skin.qss=picophone\ui\skin.qss" ^
+    --include-data-files="%OPUS_DLL%=opus.dll" ^
+    --include-package=picophone ^
+    --include-package=cryptography ^
+    --include-package=opuslib ^
+    --include-package=numpy ^
+    --nofollow-import-to=zeroconf ^
+    --output-dir=dist\nuitka ^
+    --output-filename=PicoPhone-Py.exe ^
+    picophone\__main__.py || goto :error
 
 REM ------------------------------------------------------------------
-echo === Step 4: ensure 7-Zip SFX is available ==========================
-if not exist "%SFX_DIR%\7z.sfx" (
-    echo Fetching 7-Zip SFX module...
-    if not exist "%SFX_DIR%\.." mkdir "%SFX_DIR%\.."
-    powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7zr.exe' -OutFile '%SEVENZR%' -UseBasicParsing" || goto :error
-    powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://www.7-zip.org/a/7z2501-x64.exe' -OutFile '%SFX_DIR%\..\7z-installer.exe' -UseBasicParsing" || goto :error
-    "%SEVENZR%" x "%SFX_DIR%\..\7z-installer.exe" -o"%SFX_DIR%" -y >nul || goto :error
-)
+if not exist "dist\nuitka\PicoPhone-Py.exe" goto :error
 
-REM ------------------------------------------------------------------
-echo === Step 5: pack into single-file SFX exe ==========================
-python scripts\build_sfx.py "%SFX_DIR%\7z.sfx" "%SEVENZR%" || goto :error
-
-REM ------------------------------------------------------------------
 echo.
 echo ============================================================
-echo  Built single-file portable exe:
-echo    dist\%NAME%-portable.exe
-echo  Double-click to run.
+echo  Built true single-file portable exe:
+echo    dist\nuitka\PicoPhone-Py.exe
+echo  Double-click to run.  No sibling DLLs needed.
 echo ============================================================
 exit /b 0
 

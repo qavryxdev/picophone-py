@@ -95,7 +95,7 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 
 ## Build single-file binary
 
-### Windows — single-file portable exe (~34 MB)
+### Windows — true single-file binary (~45 MB)
 
 ```cmd
 scripts\build_windows.bat
@@ -104,23 +104,21 @@ scripts\build_windows.bat
 Produces:
 
 ```
-dist\PicoPhone-Py-portable.exe       ← single file, ~34 MB, double-click
+dist\nuitka\PicoPhone-Py.exe       ← single file, ~45 MB, double-click
 ```
 
-Pipeline:
+Built with **Nuitka** (compiles Python → C → native exe via auto-downloaded
+MinGW64). The `.exe` is one file: no sibling DLLs, no `.bat` launcher.
+Nuitka's bootloader is not flagged by Avast / AVG / Defender the way
+PyInstaller's is.
 
-1. **cx_Freeze** builds `dist\PicoPhone-Py\` (a folder with the loader exe
-   + python313.dll + Qt DLLs + bundled `opus.dll`). cx_Freeze's loader is
-   not flagged by Avast (PyInstaller's bootloader is — `Win64:Malware-gen`
-   false positive).
-2. **prune_dist.py** strips unused PySide6 / Qt modules: 3D, Charts,
-   WebEngine, QML, Quick, Multimedia, Bluetooth, Sensors, translations…
-   bundle drops from ~640 MB to ~134 MB.
-3. **7-Zip SFX stub** (`7z.sfx`, signed by Igor Pavlov) wraps the pruned
-   tree into one self-extracting executable that lands in `%TEMP%` on
-   first run and launches `PicoPhone-Py.exe`.
+**Toolchain requirement:** Python 3.12 must be installed
+(`python-3.12.x-amd64.exe` from python.org — Nuitka refuses to use the
+auto-downloaded MinGW64 on Python 3.13). The build script picks it up
+automatically from the standard install location.
 
-The resulting `.exe` is a single, no-dependencies, portable file.
+First build downloads ~150 MB of MinGW64 toolchain into Nuitka's cache and
+takes 5–15 min; subsequent builds use ccache and finish in ~30 s.
 
 ### Linux
 ```bash
