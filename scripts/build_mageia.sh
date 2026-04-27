@@ -85,6 +85,7 @@ python -m nuitka \
     --enable-plugin=pyside6 \
     --include-data-files=picophone/ui/skin.qss=picophone/ui/skin.qss \
     --include-data-files=assets/icons/picophone.ico=assets/icons/picophone.ico \
+    --include-data-files=assets/ringin.wav=assets/ringin.wav \
     --include-package=picophone \
     --include-package=cryptography \
     --include-package=opuslib \

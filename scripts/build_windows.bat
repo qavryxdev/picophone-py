@@ -72,6 +72,7 @@ echo Using %NUMBER_OF_PROCESSORS% parallel jobs
     --include-data-files="picophone\ui\skin.qss=picophone\ui\skin.qss" ^
     --include-data-files="%OPUS_DLL%=opus.dll" ^
     --include-data-files="assets\icons\picophone.ico=assets\icons\picophone.ico" ^
+    --include-data-files="assets\ringin.wav=assets\ringin.wav" ^
     --include-package=picophone ^
     --include-package=cryptography ^
     --include-package=opuslib ^

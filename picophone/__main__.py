@@ -21,12 +21,13 @@ def main() -> int:
 
     config_dir = Path.home() / ".picophone"
     config_dir.mkdir(exist_ok=True)
-    setup_logging(config_dir / "picophone.log")
-
-    import logging
-    logging.getLogger().info("=== PicoPhone-Py v%s starting ===", __version__)
 
     cfg = Config.load(config_dir / "picophone.toml", legacy_ini=Path("PicoPhone.ini"))
+    setup_logging(config_dir / "picophone.log", enabled=cfg.ui.generate_log)
+
+    if cfg.ui.generate_log:
+        import logging
+        logging.getLogger().info("=== PicoPhone-Py v%s starting ===", __version__)
 
     app = QApplication(sys.argv)
     for cand in ("picophone.ico", "picophone.png"):

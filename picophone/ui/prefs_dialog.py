@@ -65,11 +65,13 @@ class PrefsDialog(QDialog):
         self.cb_v6         = QCheckBox("Listen on IPv6 (dual-stack v4 + v6)")
         self.cb_autoanswer = QCheckBox("Auto-answer incoming calls")
         self.cb_mdns       = QCheckBox("Auto-discover peers on LAN (mDNS)")
+        self.cb_log        = QCheckBox("Write picophone.log file")
         f.addRow("Identity:", self.ed_identity)
         f.addRow("Port:",     self.sb_port)
         f.addRow(self.cb_v6)
         f.addRow(self.cb_autoanswer)
         f.addRow(self.cb_mdns)
+        f.addRow(self.cb_log)
         return page
 
     def _build_audio(self):
@@ -132,6 +134,7 @@ class PrefsDialog(QDialog):
         self.cb_v6.setChecked(n.bind_v6)
         self.cb_autoanswer.setChecked(n.autoanswer)
         self.cb_mdns.setChecked(n.mdns)
+        self.cb_log.setChecked(self.cfg.ui.generate_log)
 
         self._select(self.cb_in,  a.record_device)
         self._select(self.cb_out, a.play_device)
@@ -177,5 +180,7 @@ class PrefsDialog(QDialog):
 
         n.encrypt  = self.cb_encrypt.isChecked()
         n.password = self.ed_password.text()
+
+        self.cfg.ui.generate_log = self.cb_log.isChecked()
 
         self.accept()

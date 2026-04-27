@@ -4,8 +4,9 @@ import logging
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QMouseEvent
+from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QSlider, QToolButton, QVBoxLayout, QWidget,
@@ -19,17 +20,34 @@ log = logging.getLogger(__name__)
 
 
 class _LED(QLabel):
+    """LED + click-to-mute toggle (mimics original PicoPhone's MIC/SPK lights)."""
+    clicked = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("led")
         self.setProperty("on", False)
+        self.setProperty("muted", False)
+        self.setCursor(Qt.PointingHandCursor)
 
     def set_on(self, on: bool) -> None:
         if bool(self.property("on")) == bool(on):
             return
         self.setProperty("on", on)
+        self._refresh()
+
+    def set_muted(self, muted: bool) -> None:
+        self.setProperty("muted", muted)
+        self._refresh()
+
+    def _refresh(self) -> None:
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
 
 
 class MainWindow(QMainWindow):
@@ -47,6 +65,14 @@ class MainWindow(QMainWindow):
         self._chats: dict[str, ChatWindow] = {}
         self._prev_stats: dict | None = None
         self._prev_stats_t = 0.0
+
+        self._ring = QSoundEffect(self)
+        ring_path = Path(__file__).parent.parent.parent / "assets" / "ringin.wav"
+        if ring_path.exists():
+            self._ring.setSource(QUrl.fromLocalFile(str(ring_path)))
+            self._ring.setLoopCount(QSoundEffect.Infinite)
+            self._ring.setVolume(0.7)
+
         self._build_ui()
         self._apply_skin()
         self._wire()
@@ -140,13 +166,15 @@ class MainWindow(QMainWindow):
         self.btn_min.clicked.connect(self.showMinimized)
         self.btn_call.clicked.connect(self._on_call)
         self.btn_disc.clicked.connect(self.ctrl.hang_up)
-        self.btn_off.toggled.connect(self.ctrl.set_muted)
+        self.btn_off.toggled.connect(self._on_off_toggle)
         self.btn_chat.clicked.connect(self._on_chat)
         self.btn_msg.clicked.connect(self._on_quick_msg)
         self.btn_pref.clicked.connect(self._on_prefs)
         self.btn_about.clicked.connect(self._on_about)
-        self.sl_mic.valueChanged.connect(self._save_mic)
-        self.sl_spk.valueChanged.connect(self._save_spk)
+        self.sl_mic.valueChanged.connect(self._on_mic_slider)
+        self.sl_spk.valueChanged.connect(self._on_spk_slider)
+        self.mic_led.clicked.connect(self._toggle_mic_mute)
+        self.spk_led.clicked.connect(self._toggle_spk_mute)
 
         self.ctrl.incoming_invite.connect(self._on_incoming)
         self.ctrl.call_state.connect(self._on_call_state)
@@ -154,6 +182,7 @@ class MainWindow(QMainWindow):
         self.ctrl.peer_discovered.connect(self._on_peer_discovered)
         self.ctrl.peer_lost.connect(self._on_peer_lost)
         self.ctrl.incoming_msg.connect(self._on_incoming_msg)
+        self.ctrl.notification.connect(self._on_notification)
 
     # ---------- slots ----------
 
@@ -185,12 +214,29 @@ class MainWindow(QMainWindow):
                 return
 
     def _on_incoming(self, call_id: str, peer_repr: str) -> None:
+        # Bring the main window forward so the user actually sees the prompt.
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        try:
+            self._ring.play()
+        except Exception:  # noqa: BLE001
+            pass
+
         box = QMessageBox(self)
         box.setWindowTitle("Incoming call")
+        box.setIcon(QMessageBox.Question)
         box.setText(f"Incoming call from {peer_repr}")
         accept = box.addButton("Accept", QMessageBox.AcceptRole)
         box.addButton("Reject", QMessageBox.RejectRole)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         box.exec()
+
+        try:
+            self._ring.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
         if box.clickedButton() is accept:
             self.ctrl.accept_call(call_id)
         else:
@@ -277,13 +323,49 @@ class MainWindow(QMainWindow):
                 "to take effect.",
             )
 
-    def _save_mic(self, v: int) -> None:
+    def _on_mic_slider(self, v: int) -> None:
         self.cfg.audio.rec_level = v
         self.cfg.save()
+        eng = getattr(self.ctrl, "_engine", None)
+        if eng is not None:
+            eng.in_gain = max(0.0, v / 500.0)
 
-    def _save_spk(self, v: int) -> None:
+    def _on_spk_slider(self, v: int) -> None:
         self.cfg.audio.play_volume = v
         self.cfg.save()
+        eng = getattr(self.ctrl, "_engine", None)
+        if eng is not None:
+            eng.out_gain = max(0.0, v / 500.0)
+
+    def _toggle_mic_mute(self) -> None:
+        eng = getattr(self.ctrl, "_engine", None)
+        if eng is None:
+            return
+        eng.muted = not eng.muted
+        self.btn_off.setChecked(eng.muted)
+        self.mic_led.set_muted(eng.muted)
+
+    def _toggle_spk_mute(self) -> None:
+        eng = getattr(self.ctrl, "_engine", None)
+        if eng is None:
+            return
+        eng.spk_muted = not eng.spk_muted
+        self.spk_led.set_muted(eng.spk_muted)
+
+    def _on_off_toggle(self, on: bool) -> None:
+        self.ctrl.set_muted(on)
+        self.mic_led.set_muted(on)
+
+    def _on_notification(self, kind: str, message: str) -> None:
+        icon = QMessageBox.Information
+        if kind in ("error", "lost"):
+            icon = QMessageBox.Warning
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle("PicoPhone-Py")
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec()
 
     def _refresh_meters(self) -> None:
         import time as _t

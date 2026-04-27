@@ -59,5 +59,6 @@ QProgressBar {
 QProgressBar::chunk { background: #ff6a3d; }
 
 QLabel#led            { background: #2a345a; border-radius: 6px; min-width: 12px; min-height: 12px; }
-QLabel#led[on="true"] { background: #4ad06a; }
+QLabel#led[on="true"]    { background: #4ad06a; }
+QLabel#led[muted="true"] { background: #c83737; }
 QLabel#status         { color: #ffe09a; padding: 2px 6px; }

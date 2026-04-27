@@ -38,6 +38,7 @@ class CallController(QObject):
     peer_discovered = Signal(str, str, int)    # identity, host, port
     peer_lost       = Signal(str)              # identity
     incoming_msg    = Signal(str, str, str)    # from_id, text, peer_addr_str
+    notification    = Signal(str, str)         # kind ("info"/"error"/"lost"), message
 
     def __init__(self, cfg: Config) -> None:
         super().__init__()
@@ -185,6 +186,12 @@ class CallController(QObject):
             self._pending.pop(cid, None)
             await self._end_call()
             self.log_event.emit("No answer from remote PicoPhone")
+            self.notification.emit("error", f"No answer from {target}.\n"
+                                            "Remote PicoPhone may be offline or unreachable.")
+            return
+        except OSError as e:
+            await self._end_call()
+            self.log_event.emit(str(e))
             return
 
         self._sec.key = _derive_media_key(self.cfg.net.password, nonce_a, nonce_b) if self.cfg.net.encrypt else b""
@@ -249,11 +256,13 @@ class CallController(QObject):
         p = self._pending.pop(call_id, None)
         if p and not p.waiter.done():
             p.waiter.set_exception(OSError(f"rejected: {reason}"))
+        self.notification.emit("info", f"Call rejected by remote ({reason or 'busy'}).")
 
     def on_bye(self, call_id: str) -> None:
         if call_id == self._active_id:
             asyncio.create_task(self._end_call())
             self.log_event.emit("Remote hung up")
+            self.notification.emit("info", "The remote party hung up.")
 
     def on_pong(self, call_id: str, _addr: tuple) -> None:
         if call_id == self._active_id:
@@ -359,6 +368,8 @@ class CallController(QObject):
                 self._sig.ping(self._active_id, self._active_peer)
                 if _t.monotonic() - self._last_pong > self.KEEPALIVE_TIMEOUT:
                     self.log_event.emit("Connection lost (keepalive timeout)")
+                    self.notification.emit("lost", "Connection to the remote party was lost.\n"
+                                                   "(no keepalive reply)")
                     await self._end_call()
                     return
         except asyncio.CancelledError:

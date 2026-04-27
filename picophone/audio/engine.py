@@ -62,6 +62,11 @@ class AudioEngine:
         self.cfg = cfg
         self.on_packet = on_packet
         self.muted = False
+        self.spk_muted = False
+        # Linear gain factors. Sliders feed (rec_level / 500.0) and
+        # (play_volume / 500.0) so 500 -> unity, 1000 -> +6 dB.
+        self.in_gain  = max(0.0, cfg.rec_level   / 500.0)
+        self.out_gain = max(0.0, cfg.play_volume / 500.0)
         self.tx_rms = 0.0
         self.rx_rms = 0.0
         self._frame_samples = cfg.sample_rate_hz * cfg.frame_ms // 1000
@@ -124,6 +129,9 @@ class AudioEngine:
         with self._lock:
             render = self._render_q.popleft() if self._render_q else self._silent_render
         pcm = self._aec.process(pcm, render)
+        if self.in_gain != 1.0:
+            scaled = pcm.astype(np.float32) * self.in_gain
+            pcm = np.clip(scaled, -32768, 32767).astype(np.int16)
         self.tx_rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)) + 1e-9) / 32768.0
         if self.muted or self._below_threshold(pcm):
             return
@@ -147,6 +155,11 @@ class AudioEngine:
             arr = np.pad(arr, (0, frames - arr.size))
         else:
             arr = arr[:frames]
+        if self.spk_muted:
+            arr = np.zeros(frames, dtype=np.int16)
+        elif self.out_gain != 1.0:
+            scaled = arr.astype(np.float32) * self.out_gain
+            arr = np.clip(scaled, -32768, 32767).astype(np.int16)
         outdata[:, 0] = arr
         self.rx_rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)) + 1e-9) / 32768.0
         with self._lock:

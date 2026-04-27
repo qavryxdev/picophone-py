@@ -50,7 +50,7 @@ class UiCfg:
     light_background: bool = False
     beeper: bool = False
     window_pos: tuple[int, int] = (200, 200)
-    generate_log: bool = True
+    generate_log: bool = False
 
 
 @dataclass
