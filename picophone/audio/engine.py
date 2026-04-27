@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections import deque
 from typing import Callable
 
 import numpy as np
 
+from picophone.audio.aec import Aec, NullAec, make_aec
 from picophone.config import AudioCfg
 
 log = logging.getLogger(__name__)
@@ -15,14 +17,15 @@ try:
     import sounddevice as sd
 except Exception as e:  # noqa: BLE001
     sd = None
-    log.warning("sounddevice unavailable: %s", e)
+    log.warning("sounddevice unavailable: %s "
+                "(Linux: apt install libportaudio2)", e)
 
 try:
     import opuslib
 except Exception:
     opuslib = None
 
-if opuslib is None:
+if opuslib is None and sys.platform == "win32":
     # On Windows opuslib uses ctypes.util.find_library('opus') which searches PATH.
     # pyogg ships a bundled opus.dll — prepend its directory and retry.
     try:
@@ -31,19 +34,21 @@ if opuslib is None:
         os.environ["PATH"] = os.path.dirname(pyogg.__file__) + os.pathsep + os.environ.get("PATH", "")
         import opuslib  # noqa: F401  retry
     except Exception as e:  # noqa: BLE001
-        log.warning("opuslib unavailable: %s", e)
-
-try:
-    from webrtc_audio_processing import AudioProcessingModule as APM
-except Exception:  # noqa: BLE001
-    APM = None
+        log.warning("opuslib unavailable: %s (install pyogg or libopus)", e)
+elif opuslib is None:
+    log.warning("opuslib unavailable; install libopus (Linux: apt install libopus0; "
+                "macOS: brew install opus)")
 
 
 PacketCallback = Callable[[bytes], None]
 
 
 class AudioEngine:
-    """Capture -> [AEC/NS] -> Opus encode -> on_packet(); on inbound: enqueue() -> Opus decode -> playback."""
+    """Capture -> AEC -> Opus encode -> on_packet(); on inbound: enqueue() -> Opus decode -> playback.
+
+    The AEC reference is fed from a small bounded queue of recent playback frames so
+    capture and playback callbacks (on different PortAudio threads) stay loosely aligned.
+    """
 
     def __init__(self, cfg: AudioCfg, on_packet: PacketCallback) -> None:
         self.cfg = cfg
@@ -56,10 +61,11 @@ class AudioEngine:
         self._stream_out = None
         self._enc = None
         self._dec = None
-        self._apm = None
+        self._aec: Aec = NullAec()
         self._jitter: deque[bytes] = deque(maxlen=64)
+        self._render_q: deque[np.ndarray] = deque(maxlen=8)   # ~160ms at 20ms frames
         self._lock = threading.Lock()
-        self._render_ref = np.zeros(self._frame_samples, dtype=np.int16)
+        self._silent_render = np.zeros(self._frame_samples, dtype=np.int16)
 
     def start(self) -> None:
         if sd is None or opuslib is None:
@@ -68,9 +74,8 @@ class AudioEngine:
         self._enc = opuslib.Encoder(rate, 1, opuslib.APPLICATION_VOIP)
         self._enc.bitrate = self.cfg.opus_bitrate_bps
         self._dec = opuslib.Decoder(rate, 1)
-        if APM and self.cfg.aec:
-            self._apm = APM(aec_type=2, enable_ns=self.cfg.ns, enable_vad=self.cfg.vad)
-            self._apm.set_stream_format(rate, 1)
+        self._aec = make_aec(self._frame_samples, rate, ns=self.cfg.ns, vad=self.cfg.vad) \
+                    if self.cfg.aec else NullAec()
 
         self._stream_in = sd.InputStream(
             samplerate=rate, channels=1, dtype="int16",
@@ -90,7 +95,9 @@ class AudioEngine:
             if s:
                 s.stop(); s.close()
         self._stream_in = self._stream_out = None
-        self._enc = self._dec = self._apm = None
+        self._enc = self._dec = None
+        self._aec = NullAec()
+        self._render_q.clear()
 
     @staticmethod
     def _dev(d):
@@ -106,8 +113,9 @@ class AudioEngine:
         if status:
             log.debug("capture status: %s", status)
         pcm = indata[:, 0].copy()
-        if self._apm is not None:
-            pcm = self._apm.process_stream(pcm, self._render_ref)
+        with self._lock:
+            render = self._render_q.popleft() if self._render_q else self._silent_render
+        pcm = self._aec.process(pcm, render)
         self.tx_rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)) + 1e-9) / 32768.0
         if self.muted or self._below_threshold(pcm):
             return
@@ -127,9 +135,14 @@ class AudioEngine:
         else:
             pcm = self._dec.decode(payload, self._frame_samples, decode_fec=False)
         arr = np.frombuffer(pcm, dtype=np.int16)
-        outdata[:, 0] = arr[:frames] if arr.size >= frames else np.pad(arr, (0, frames - arr.size))
+        if arr.size < frames:
+            arr = np.pad(arr, (0, frames - arr.size))
+        else:
+            arr = arr[:frames]
+        outdata[:, 0] = arr
         self.rx_rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)) + 1e-9) / 32768.0
-        self._render_ref = outdata[:, 0].copy()
+        with self._lock:
+            self._render_q.append(arr.copy())
 
     def _below_threshold(self, pcm: np.ndarray) -> bool:
         if not self.cfg.vad:
