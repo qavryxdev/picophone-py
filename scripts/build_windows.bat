@@ -55,7 +55,13 @@ if not exist "%OPUS_DLL%" (
 
 REM ------------------------------------------------------------------
 echo === Step 4: Nuitka onefile build (this takes 5-15 min on first run) ==
-if exist dist\nuitka rmdir /s /q dist\nuitka
+REM Don't wipe dist\nuitka wholesale: a Linux ELF (PicoPhone-Py without .exe)
+REM may live alongside us from a build_mageia.sh / WSL build.
+if exist dist\nuitka\PicoPhone-Py.exe        del /q dist\nuitka\PicoPhone-Py.exe
+if exist dist\nuitka\__main__.build          rmdir /s /q dist\nuitka\__main__.build
+if exist dist\nuitka\__main__.dist           rmdir /s /q dist\nuitka\__main__.dist
+if exist dist\nuitka\__main__.onefile-build  rmdir /s /q dist\nuitka\__main__.onefile-build
+if not exist dist\nuitka                     mkdir dist\nuitka
 
 REM Use all CPU cores for compilation.
 REM NUMBER_OF_PROCESSORS is a built-in Windows env variable (logical CPU count).
