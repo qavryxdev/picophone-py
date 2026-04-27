@@ -289,7 +289,12 @@ class CallController(QObject):
             self._engine.start()
         except Exception as e:  # noqa: BLE001
             log.exception("Audio engine failed to start")
-            self.log_event.emit(f"Audio start failed: {e}")
+            short = type(e).__name__
+            if "PortAudio" in short or "device" in str(e).lower():
+                self.log_event.emit("No audio device — call has no sound. "
+                                     "Enable a sound card in VM settings, or run on host.")
+            else:
+                self.log_event.emit(f"Audio start failed: {e}")
             self._engine = None
 
     def _on_audio_packet(self, payload: bytes) -> None:
