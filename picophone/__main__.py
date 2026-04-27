@@ -40,7 +40,10 @@ def main() -> int:
     controller.start()
 
     win = MainWindow(cfg, controller)
-    win.show()
+    if "--tray" in sys.argv and cfg.ui.minimize_to_tray:
+        win.start_in_tray()
+    else:
+        win.show()
     rc = app.exec()
     controller.stop()
     return rc

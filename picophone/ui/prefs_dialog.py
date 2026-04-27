@@ -66,12 +66,19 @@ class PrefsDialog(QDialog):
         self.cb_autoanswer = QCheckBox("Auto-answer incoming calls")
         self.cb_mdns       = QCheckBox("Auto-discover peers on LAN (mDNS)")
         self.cb_log        = QCheckBox("Write picophone.log file")
+        self.cb_tray       = QCheckBox("Minimize to system tray (background)")
+        self.cb_autostart  = QCheckBox("Start with Windows (minimized to tray)")
         f.addRow("Identity:", self.ed_identity)
         f.addRow("Port:",     self.sb_port)
         f.addRow(self.cb_v6)
         f.addRow(self.cb_autoanswer)
         f.addRow(self.cb_mdns)
         f.addRow(self.cb_log)
+        f.addRow(self.cb_tray)
+        f.addRow(self.cb_autostart)
+        # Autostart implies tray (otherwise the auto-launched window pops up
+        # in the user's face on every login).
+        self.cb_autostart.toggled.connect(lambda on: on and self.cb_tray.setChecked(True))
         return page
 
     def _build_audio(self):
@@ -145,6 +152,9 @@ class PrefsDialog(QDialog):
         self.cb_autoanswer.setChecked(n.autoanswer)
         self.cb_mdns.setChecked(n.mdns)
         self.cb_log.setChecked(self.cfg.ui.generate_log)
+        self.cb_tray.setChecked(self.cfg.ui.minimize_to_tray)
+        from picophone import autostart
+        self.cb_autostart.setChecked(autostart.is_enabled())
 
         self._select(self.cb_in,  a.record_device)
         self._select(self.cb_out, a.play_device)
@@ -193,6 +203,10 @@ class PrefsDialog(QDialog):
         n.encrypt  = self.cb_encrypt.isChecked()
         n.password = self.ed_password.text()
 
-        self.cfg.ui.generate_log = self.cb_log.isChecked()
+        self.cfg.ui.generate_log     = self.cb_log.isChecked()
+        self.cfg.ui.minimize_to_tray = self.cb_tray.isChecked()
+        self.cfg.ui.autostart        = self.cb_autostart.isChecked()
+        from picophone import autostart
+        autostart.set_enabled(self.cfg.ui.autostart)
 
         self.accept()

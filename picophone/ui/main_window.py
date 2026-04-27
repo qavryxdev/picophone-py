@@ -7,9 +7,11 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtMultimedia import QSoundEffect
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QSlider, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QMainWindow, QMenu, QMessageBox, QProgressBar, QSlider, QSystemTrayIcon,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from picophone.call import CallController
@@ -74,6 +76,8 @@ class MainWindow(QMainWindow):
             self._ring.setSource(QUrl.fromLocalFile(str(ring_path)))
             self._ring.setLoopCount(-2)            # QSoundEffect.Infinite, as int (Qt 6.11 strict)
             self._ring.setVolume(0.7)
+
+        self._tray = self._build_tray()
 
         self._build_ui()
         self._apply_skin()
@@ -165,7 +169,7 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         self.btn_close.clicked.connect(self.close)
-        self.btn_min.clicked.connect(self.showMinimized)
+        self.btn_min.clicked.connect(self._on_minimize)
         self.btn_call.clicked.connect(self._on_call)
         self.btn_disc.clicked.connect(self.ctrl.hang_up)
         self.btn_off.toggled.connect(self._on_off_toggle)
@@ -436,6 +440,54 @@ class MainWindow(QMainWindow):
         self.lbl_tx.setToolTip(tip); self.lbl_rx.setToolTip(tip)
         self._prev_stats = stats; self._prev_stats_t = now
 
+    # ---------- tray / minimize ----------
+
+    def _build_tray(self) -> QSystemTrayIcon | None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+        icon_path = Path(__file__).parent.parent.parent / "assets" / "icons" / "picophone.ico"
+        tray = QSystemTrayIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(), self)
+        tray.setToolTip(f"PicoPhone-Py — {self.cfg.net.identity}")
+        menu = QMenu()
+        act_show = menu.addAction("Show")
+        act_show.triggered.connect(self._tray_show)
+        menu.addSeparator()
+        act_quit = menu.addAction("Quit")
+        act_quit.triggered.connect(self._tray_quit)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        return tray
+
+    def _on_tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._tray_show()
+
+    def _tray_show(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_minimize(self) -> None:
+        if self.cfg.ui.minimize_to_tray and self._tray is not None:
+            self.hide()
+        else:
+            self.showMinimized()
+
+    def start_in_tray(self) -> None:
+        """Called by __main__ when launched with --tray."""
+        if self._tray is None:
+            self.show()
+        # else: stay hidden; tray icon is the only visible affordance.
+
+    def _tray_quit(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            app._quitting = True       # tells closeEvent to actually close
+        self.close()
+        if app is not None:
+            app.quit()
+
     # ---------- frameless drag ----------
 
     def mousePressEvent(self, e: QMouseEvent) -> None:
@@ -452,6 +504,12 @@ class MainWindow(QMainWindow):
         self.cfg.save()
 
     def closeEvent(self, e) -> None:
+        # If tray-mode is on and the user clicks X, hide instead of quitting.
+        # They can still quit via the tray menu.
+        if self.cfg.ui.minimize_to_tray and self._tray is not None and not getattr(QApplication.instance(), "_quitting", False):
+            e.ignore()
+            self.hide()
+            return
         self.cfg.ui.window_pos = (self.x(), self.y())
         self.cfg.save()
         self.ctrl.stop()

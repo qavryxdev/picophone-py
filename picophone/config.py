@@ -52,6 +52,8 @@ class UiCfg:
     beeper: bool = False
     window_pos: tuple[int, int] = (200, 200)
     generate_log: bool = False
+    minimize_to_tray: bool = False
+    autostart: bool = False
 
 
 @dataclass
