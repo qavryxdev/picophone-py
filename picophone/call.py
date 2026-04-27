@@ -295,21 +295,29 @@ class CallController(QObject):
 
 
 async def _resolve(target: str, default_port: int, prefer_v6: bool) -> tuple:
-    """Parse host[:port] / [ipv6]:port and resolve. Returns sockaddr suitable for sendto."""
+    """Parse host[:port] / [ipv6]:port and resolve. Returns sockaddr suitable for sendto.
+
+    When the signaling socket is dual-stack v6 (V6ONLY=0) we always need a v6
+    sockaddr — pure v6 for AAAA hosts, ``::ffff:a.b.c.d`` for A hosts. Windows'
+    getaddrinfo with family=AF_INET6 on a literal IPv4 string raises
+    WSAHOST_NOT_FOUND, so we resolve with AF_UNSPEC and map afterwards.
+    """
     host, port = _split_host_port(target, default_port)
-    family = socket.AF_INET6 if prefer_v6 else socket.AF_UNSPEC
     loop = asyncio.get_running_loop()
-    infos = await loop.getaddrinfo(host, port, family=family, type=socket.SOCK_DGRAM)
+    try:
+        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_DGRAM)
+    except socket.gaierror as e:
+        raise OSError(f"no addrinfo for {target}: {e}") from e
     if not infos:
         raise OSError(f"no addrinfo for {target}")
+
     if prefer_v6:
         for fam, _t, _p, _c, sa in infos:
             if fam == socket.AF_INET6:
                 return sa
-        # fall back: map v4 to v4-mapped v6 so a v6-only socket can sendto
-        fam, _t, _p, _c, sa = infos[0]
-        ip4 = sa[0]
-        return (f"::ffff:{ip4}", sa[1], 0, 0)
+        for fam, _t, _p, _c, sa in infos:
+            if fam == socket.AF_INET:
+                return (f"::ffff:{sa[0]}", sa[1], 0, 0)
     return infos[0][4]
 
 

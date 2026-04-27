@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import configparser
 import logging
-import tomllib
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib                       # 3.11+
+except ImportError:
+    import tomli as tomllib              # type: ignore[import-not-found]
 
 log = logging.getLogger(__name__)
 
