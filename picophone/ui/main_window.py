@@ -7,12 +7,13 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressBar,
-    QSlider, QToolButton, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QProgressBar, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from picophone.call import CallController
 from picophone.config import Config
+from picophone.ui.chat_window import ChatWindow
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
 
         self._drag_offset: QPoint | None = None
         self._call_state = "idle"
+        self._chats: dict[str, ChatWindow] = {}
         self._build_ui()
         self._apply_skin()
         self._wire()
@@ -137,6 +139,9 @@ class MainWindow(QMainWindow):
         self.btn_call.clicked.connect(self._on_call)
         self.btn_disc.clicked.connect(self.ctrl.hang_up)
         self.btn_off.toggled.connect(self.ctrl.set_muted)
+        self.btn_chat.clicked.connect(self._on_chat)
+        self.btn_msg.clicked.connect(self._on_quick_msg)
+        self.btn_pref.clicked.connect(self._on_prefs)
         self.btn_about.clicked.connect(self._on_about)
         self.sl_mic.valueChanged.connect(self._save_mic)
         self.sl_spk.valueChanged.connect(self._save_spk)
@@ -146,6 +151,7 @@ class MainWindow(QMainWindow):
         self.ctrl.log_event.connect(self.status.setText)
         self.ctrl.peer_discovered.connect(self._on_peer_discovered)
         self.ctrl.peer_lost.connect(self._on_peer_lost)
+        self.ctrl.incoming_msg.connect(self._on_incoming_msg)
 
     # ---------- slots ----------
 
@@ -201,8 +207,73 @@ class MainWindow(QMainWindow):
             self, "About PicoPhone-Py",
             "PicoPhone-Py v0.1\n\n"
             "Modern reimplementation of PicoPhone (Aldazabal, 2009).\n"
-            "Opus 48 kHz · WebRTC AEC3 · IPv6 · AES-GCM media.",
+            "Opus 48 kHz · FDAF AEC · IPv6 · AES-GCM media.",
         )
+
+    # ---------- chat / msg ----------
+
+    def _selected_target(self) -> tuple[str, str] | None:
+        """Returns (peer_identity, peer_target) for the currently picked contact."""
+        idx = self.cb_contact.currentIndex()
+        target = (self.cb_contact.itemData(idx) if idx >= 0 else None) \
+                 or self.cb_contact.currentText().strip()
+        if not target:
+            return None
+        text = self.cb_contact.itemText(idx) if idx >= 0 else target
+        identity = text.split("  (", 1)[0] if "  (" in text else target
+        return identity, target
+
+    def _open_chat(self, peer_identity: str, peer_target: str) -> ChatWindow:
+        chat = self._chats.get(peer_identity)
+        if chat is None:
+            chat = ChatWindow(peer_identity, peer_target, self.cfg.net.identity, self)
+            chat.send_clicked.connect(self.ctrl.send_msg)
+            self._chats[peer_identity] = chat
+        else:
+            chat.update_target(peer_target)
+        chat.show(); chat.raise_(); chat.activateWindow()
+        return chat
+
+    def _on_chat(self) -> None:
+        sel = self._selected_target()
+        if sel is None:
+            QMessageBox.information(self, "Chat", "Pick a contact first.")
+            return
+        self._open_chat(*sel)
+
+    def _on_quick_msg(self) -> None:
+        sel = self._selected_target()
+        if sel is None:
+            QMessageBox.information(self, "MSG", "Pick a contact first.")
+            return
+        identity, target = sel
+        text, ok = QInputDialog.getText(self, "Send message", f"Message to {identity}:",
+                                        QLineEdit.Normal, "")
+        if ok and text.strip():
+            self.ctrl.send_msg(target, text.strip())
+            self._open_chat(identity, target).append(self.cfg.net.identity, text.strip())
+
+    def _on_incoming_msg(self, from_id: str, text: str, peer_addr: str) -> None:
+        chat = self._chats.get(from_id)
+        if chat is None:
+            chat = ChatWindow(from_id, peer_addr, self.cfg.net.identity, self)
+            chat.send_clicked.connect(self.ctrl.send_msg)
+            self._chats[from_id] = chat
+        else:
+            chat.update_target(peer_addr)
+        chat.append(from_id, text)
+        chat.show(); chat.raise_()
+
+    def _on_prefs(self) -> None:
+        from picophone.ui.prefs_dialog import PrefsDialog
+        dlg = PrefsDialog(self.cfg, self)
+        if dlg.exec() == dlg.DialogCode.Accepted:
+            self.cfg.save()
+            QMessageBox.information(
+                self, "PicoPhone-Py",
+                "Settings saved. Restart the app for port/identity/device changes "
+                "to take effect.",
+            )
 
     def _save_mic(self, v: int) -> None:
         self.cfg.audio.rec_level = v

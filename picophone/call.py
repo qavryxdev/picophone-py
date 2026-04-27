@@ -37,6 +37,7 @@ class CallController(QObject):
     log_event       = Signal(str)              # human-readable line for status bar / log
     peer_discovered = Signal(str, str, int)    # identity, host, port
     peer_lost       = Signal(str)              # identity
+    incoming_msg    = Signal(str, str, str)    # from_id, text, peer_addr_str
 
     def __init__(self, cfg: Config) -> None:
         super().__init__()
@@ -79,6 +80,7 @@ class CallController(QObject):
                 on_accept=self.on_accept,
                 on_reject=self.on_reject,
                 on_bye=self.on_bye,
+                on_msg=self.on_msg,
             )
         except OSError as e:
             log.error("Cannot bind signaling port %d: %s", self.cfg.net.port, e)
@@ -232,6 +234,25 @@ class CallController(QObject):
         if call_id == self._active_id:
             asyncio.create_task(self._end_call())
             self.log_event.emit("Remote hung up")
+
+    def on_msg(self, from_id: str, text: str, addr: tuple) -> None:
+        host, port = addr[0], addr[1]
+        peer_str = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        self.incoming_msg.emit(from_id, text, peer_str)
+        self.log_event.emit(f"MSG <{from_id}> {text[:40]}")
+
+    def send_msg(self, target: str, text: str) -> None:
+        self._submit(self._send_msg(target, text))
+
+    async def _send_msg(self, target: str, text: str) -> None:
+        if self._sig is None:
+            return
+        try:
+            peer = await _resolve(target, self.cfg.net.port, prefer_v6=self.cfg.net.bind_v6)
+        except OSError as e:
+            self.log_event.emit(f"Cannot resolve {target}: {e}")
+            return
+        self._sig.msg(text, peer)
 
     # -------- media wiring --------
 

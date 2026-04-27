@@ -95,12 +95,19 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 
 ## Build single-file binary
 
-```bash
-pip install pyinstaller
-pyinstaller --noconfirm --windowed --name PicoPhone-Py \
-    --add-data "picophone/ui/skin.qss:picophone/ui" \
-    -m picophone
+### Windows
+```cmd
+scripts\build_windows.bat
 ```
+Produces `dist\PicoPhone-Py.exe` (one-file, frameless, bundled `opus.dll` from pyogg).
+
+### Linux
+```bash
+PICOPHONE_INSTALL_SYSDEPS=1 scripts/build_linux.sh
+```
+(Or pre-install `libportaudio2 libopus0 avahi-daemon` and drop the env var.)
+Produces `dist/PicoPhone-Py` (one-file ELF). `libopus.so.0` is loaded from the
+system at runtime so it stays small.
 
 ## Status
 

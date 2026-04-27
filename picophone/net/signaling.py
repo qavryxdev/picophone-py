@@ -29,6 +29,7 @@ InviteCallback = Callable[[CallInvite], Awaitable[None]]
 AcceptCallback = Callable[[str, int, bytes], None]           # call_id, peer_media_port, nonce_b
 RejectCallback = Callable[[str, str], None]                  # call_id, reason
 ByeCallback    = Callable[[str], None]                       # call_id
+MsgCallback    = Callable[[str, str, tuple], None]           # from_id, text, addr
 
 
 class SignalingServer(asyncio.DatagramProtocol):
@@ -38,12 +39,14 @@ class SignalingServer(asyncio.DatagramProtocol):
                  on_invite: InviteCallback,
                  on_accept: AcceptCallback | None = None,
                  on_reject: RejectCallback | None = None,
-                 on_bye: ByeCallback | None = None) -> None:
+                 on_bye: ByeCallback | None = None,
+                 on_msg: MsgCallback | None = None) -> None:
         self.identity = identity
         self.on_invite = on_invite
-        self.on_accept = on_accept or (lambda _i, _p: None)
+        self.on_accept = on_accept or (lambda _i, _p, _n: None)
         self.on_reject = on_reject or (lambda _i, _r: None)
         self.on_bye    = on_bye    or (lambda _i: None)
+        self.on_msg    = on_msg    or (lambda _f, _t, _a: None)
         self.transport: asyncio.DatagramTransport | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -84,7 +87,7 @@ class SignalingServer(asyncio.DatagramProtocol):
         elif t == "BYE":
             self.on_bye(cid)
         elif t == "MSG":
-            log.info("MSG from %s: %s", msg.get("from"), msg.get("text", ""))
+            self.on_msg(msg.get("from", "?"), msg.get("text", ""), addr)
 
     def send(self, msg: dict, addr) -> None:
         if self.transport is None:
@@ -111,6 +114,10 @@ class SignalingServer(asyncio.DatagramProtocol):
     def bye(self, call_id: str, addr) -> None:
         self.send({"v": PROTOCOL_VERSION, "t": "BYE", "id": call_id}, addr)
 
+    def msg(self, text: str, addr) -> None:
+        self.send({"v": PROTOCOL_VERSION, "t": "MSG",
+                   "from": self.identity, "text": text}, addr)
+
 
 async def start_server(port: int, identity: str,
                        on_invite: InviteCallback,
@@ -118,6 +125,7 @@ async def start_server(port: int, identity: str,
                        on_accept: AcceptCallback | None = None,
                        on_reject: RejectCallback | None = None,
                        on_bye: ByeCallback | None = None,
+                       on_msg: MsgCallback | None = None,
                        ) -> tuple[asyncio.DatagramTransport, SignalingServer]:
     loop = asyncio.get_running_loop()
     family = socket.AF_INET6 if bind_v6 else socket.AF_INET
@@ -128,7 +136,7 @@ async def start_server(port: int, identity: str,
     else:
         sock.bind(("0.0.0.0", port))
     transport, protocol = await loop.create_datagram_endpoint(
-        lambda: SignalingServer(identity, on_invite, on_accept, on_reject, on_bye),
+        lambda: SignalingServer(identity, on_invite, on_accept, on_reject, on_bye, on_msg),
         sock=sock,
     )
     log.info("Signaling listening on %s port %d (dual-stack=%s)",

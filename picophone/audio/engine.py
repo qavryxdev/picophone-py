@@ -26,12 +26,20 @@ except Exception:
     opuslib = None
 
 if opuslib is None and sys.platform == "win32":
-    # On Windows opuslib uses ctypes.util.find_library('opus') which searches PATH.
-    # pyogg ships a bundled opus.dll — prepend its directory and retry.
+    import os
+    candidates = []
+    # PyInstaller bundle (one-folder or one-file): _MEIPASS holds extracted resources.
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(sys._MEIPASS)  # type: ignore[attr-defined]
     try:
-        import os
         import pyogg
-        os.environ["PATH"] = os.path.dirname(pyogg.__file__) + os.pathsep + os.environ.get("PATH", "")
+        candidates.append(os.path.dirname(pyogg.__file__))
+    except ImportError:
+        pass
+    for d in candidates:
+        if d and d not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+    try:
         import opuslib  # noqa: F401  retry
     except Exception as e:  # noqa: BLE001
         log.warning("opuslib unavailable: %s (install pyogg or libopus)", e)
