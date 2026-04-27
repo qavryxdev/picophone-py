@@ -65,6 +65,8 @@ class MainWindow(QMainWindow):
         self._chats: dict[str, ChatWindow] = {}
         self._prev_stats: dict | None = None
         self._prev_stats_t = 0.0
+        self._incoming_dialog = None
+        self._incoming_call_id: str | None = None
 
         self._ring = QSoundEffect(self)
         ring_path = Path(__file__).parent.parent.parent / "assets" / "ringin.wav"
@@ -183,6 +185,7 @@ class MainWindow(QMainWindow):
         self.ctrl.peer_lost.connect(self._on_peer_lost)
         self.ctrl.incoming_msg.connect(self._on_incoming_msg)
         self.ctrl.notification.connect(self._on_notification)
+        self.ctrl.incoming_cancelled.connect(self._on_incoming_cancelled)
 
     # ---------- slots ----------
 
@@ -214,6 +217,13 @@ class MainWindow(QMainWindow):
                 return
 
     def _on_incoming(self, call_id: str, peer_repr: str) -> None:
+        # If we're already showing a ringing dialog, treat additional INVITEs
+        # as busy — Qt modal dialogs don't stack reliably and a second
+        # nested exec() can deadlock or crash.
+        if self._incoming_dialog is not None or self._call_state == "in-call":
+            self.ctrl.reject_call(call_id, "busy")
+            return
+
         # Bring the main window forward so the user actually sees the prompt.
         self.showNormal()
         self.raise_()
@@ -230,17 +240,38 @@ class MainWindow(QMainWindow):
         accept = box.addButton("Accept", QMessageBox.AcceptRole)
         box.addButton("Reject", QMessageBox.RejectRole)
         box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-        box.exec()
 
+        self._incoming_dialog = box
+        self._incoming_call_id = call_id
         try:
-            self._ring.stop()
-        except Exception:  # noqa: BLE001
-            pass
+            box.exec()
+        finally:
+            self._incoming_dialog = None
+            self._incoming_call_id = None
+            try:
+                self._ring.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
-        if box.clickedButton() is accept:
+        clicked = box.clickedButton()
+        if clicked is None:
+            return                          # remote cancelled, no action needed
+        if clicked is accept:
             self.ctrl.accept_call(call_id)
         else:
             self.ctrl.reject_call(call_id)
+
+    def _on_incoming_cancelled(self, call_id: str) -> None:
+        if self._incoming_call_id == call_id and self._incoming_dialog is not None:
+            try:
+                self._ring.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            # close() returns from exec() with no clicked button -> caller of
+            # _on_incoming sees clickedButton() is None and skips both
+            # accept_call and reject_call (the caller already cancelled).
+            self._incoming_dialog.done(0)
+            self.status.setText("Caller cancelled")
 
     def _on_call_state(self, state: str) -> None:
         self._call_state = state

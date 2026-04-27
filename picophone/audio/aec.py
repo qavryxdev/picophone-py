@@ -161,9 +161,16 @@ class _DfnPostProcessor:
     """
 
     def __init__(self, frame_samples: int, sample_rate_hz: int) -> None:
+        # Nuitka --windowed leaves sys.stderr = None, which breaks loguru
+        # (DFN's logger backend) on its very first .add() call.  Patch a
+        # dummy stream in *before* importing df.
+        import sys, io, types
+        if sys.stderr is None:
+            sys.stderr = io.StringIO()
+        if sys.stdout is None:
+            sys.stdout = io.StringIO()
         # Older deepfilternet (0.5.6) imports torchaudio.backend.common which
         # was removed in torchaudio 2.1+.  Stub it before df.enhance loads.
-        import sys, types
         if "torchaudio.backend.common" not in sys.modules:
             ta_be = types.ModuleType("torchaudio.backend")
             class _AudioMetaData: pass

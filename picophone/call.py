@@ -39,6 +39,7 @@ class CallController(QObject):
     peer_lost       = Signal(str)              # identity
     incoming_msg    = Signal(str, str, str)    # from_id, text, peer_addr_str
     notification    = Signal(str, str)         # kind ("info"/"error"/"lost"), message
+    incoming_cancelled = Signal(str)           # call_id — caller hung up before we accepted
 
     def __init__(self, cfg: Config) -> None:
         super().__init__()
@@ -56,6 +57,8 @@ class CallController(QObject):
         self._keepalive_task: asyncio.Task | None = None
         self._last_pong: float = 0.0
         self._pending_invites: dict[str, CallInvite] = {}
+        self._ringing_tasks: dict[str, asyncio.Task] = {}    # cid -> ringing-watch keepalive
+        self._ringing_pongs: dict[str, float] = {}           # cid -> last PONG monotonic time
         self._active_id: str | None = None
         self._active_peer: tuple | None = None
 
@@ -170,7 +173,10 @@ class CallController(QObject):
             return
 
         nonce_a = os.urandom(16)
-        self._open_media()
+        # Don't start the audio engine yet — wait for ACCEPT.  Otherwise the
+        # mic captures during ringing and any spurious audio (system beeps,
+        # keystrokes, even an unintended _send_media to a stale peer) leaks
+        # before the callee has agreed to the call.
         self.call_state.emit("calling")
         self.log_event.emit(f"Calling {target} -> {peer[0]}:{peer[1]}")
 
@@ -195,6 +201,9 @@ class CallController(QObject):
             return
 
         self._sec.key = _derive_media_key(self.cfg.net.password, nonce_a, nonce_b) if self.cfg.net.encrypt else b""
+        # Now that the callee has accepted, open the audio engine and route
+        # media to them.  Any frames captured before this point are dropped.
+        self._open_media()
         self._media_peer = peer
         self._active_id, self._active_peer = cid, peer
         self._start_keepalive()
@@ -205,6 +214,7 @@ class CallController(QObject):
         inv = self._pending_invites.pop(call_id, None)
         if inv is None or self._sig is None:
             return
+        self._stop_ringing_watch(call_id)
         nonce_b = os.urandom(16)
         self._sec.key = _derive_media_key(self.cfg.net.password, inv.nonce_a, nonce_b) if self.cfg.net.encrypt else b""
         self._open_media()
@@ -217,6 +227,7 @@ class CallController(QObject):
 
     async def _reject_call(self, call_id: str, reason: str) -> None:
         inv = self._pending_invites.pop(call_id, None)
+        self._stop_ringing_watch(call_id)
         if inv is None or self._sig is None:
             return
         self._sig.reject(call_id, reason, inv.addr)
@@ -224,8 +235,20 @@ class CallController(QObject):
 
     async def _end_call(self) -> None:
         self._stop_keepalive()
+        # 1) Active (already-ACCEPT'd) call: notify peer.
         if self._active_id and self._active_peer and self._sig:
             self._sig.bye(self._active_id, self._active_peer)
+        # 2) In-flight outbound INVITEs (caller pressed DISC during ringing
+        #    before peer accepted): tell the peer to stop ringing.
+        if self._sig:
+            for cid, p in list(self._pending.items()):
+                try:
+                    self._sig.bye(cid, p.peer)
+                except Exception:  # noqa: BLE001
+                    pass
+                if not p.waiter.done():
+                    p.waiter.cancel()
+        self._pending.clear()
         self._active_id = self._active_peer = None
         self._media_peer = None
         if self._engine:
@@ -243,9 +266,43 @@ class CallController(QObject):
         self.log_event.emit(f"Incoming call from {peer_repr}")
         if self.cfg.net.autoanswer:
             await self._accept_call(inv.call_id)
-        else:
-            self.call_state.emit("ringing")
-            self.incoming_invite.emit(inv.call_id, peer_repr)
+            return
+        self.call_state.emit("ringing")
+        self.incoming_invite.emit(inv.call_id, peer_repr)
+        # Watch the caller while we ring: ping them every 3 s, abort the
+        # ring if they don't reply within 9 s (caller force-quit, network
+        # dropped, BYE got lost in transit).
+        self._ringing_tasks[inv.call_id] = asyncio.create_task(
+            self._ringing_watch(inv.call_id, inv.addr)
+        )
+
+    async def _ringing_watch(self, call_id: str, addr: tuple) -> None:
+        import time as _t
+        self._ringing_pongs[call_id] = _t.monotonic()
+        try:
+            while call_id in self._pending_invites:
+                await asyncio.sleep(3.0)
+                if call_id not in self._pending_invites:
+                    return
+                if self._sig:
+                    self._sig.ping(call_id, addr)
+                if _t.monotonic() - self._ringing_pongs.get(call_id, 0.0) > 9.0:
+                    self._pending_invites.pop(call_id, None)
+                    self.incoming_cancelled.emit(call_id)
+                    self.log_event.emit("Caller went away (no PONG)")
+                    self.call_state.emit("idle")
+                    return
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._ringing_pongs.pop(call_id, None)
+            self._ringing_tasks.pop(call_id, None)
+
+    def _stop_ringing_watch(self, call_id: str) -> None:
+        t = self._ringing_tasks.pop(call_id, None)
+        if t and not t.done():
+            t.cancel()
+        self._ringing_pongs.pop(call_id, None)
 
     def on_accept(self, call_id: str, peer_media_port: int, nonce_b: bytes) -> None:
         p = self._pending.pop(call_id, None)
@@ -259,15 +316,32 @@ class CallController(QObject):
         self.notification.emit("info", f"Call rejected by remote ({reason or 'busy'}).")
 
     def on_bye(self, call_id: str) -> None:
+        # 1) Active call ended.
         if call_id == self._active_id:
             asyncio.create_task(self._end_call())
             self.log_event.emit("Remote hung up")
             self.notification.emit("info", "The remote party hung up.")
+            return
+        # 2) Caller cancelled an INVITE we hadn't accepted yet — stop ringing.
+        inv = self._pending_invites.pop(call_id, None)
+        if inv is not None:
+            self._stop_ringing_watch(call_id)
+            self.incoming_cancelled.emit(call_id)
+            self.log_event.emit(f"{inv.from_id} cancelled the call")
+            self.call_state.emit("idle")
+            return
+        # 3) Callee rejected/cancelled our outbound INVITE — wake the waiter.
+        p = self._pending.pop(call_id, None)
+        if p and not p.waiter.done():
+            p.waiter.set_exception(OSError("cancelled"))
 
     def on_pong(self, call_id: str, _addr: tuple) -> None:
+        import time as _t
+        now = _t.monotonic()
         if call_id == self._active_id:
-            import time as _t
-            self._last_pong = _t.monotonic()
+            self._last_pong = now
+        if call_id in self._ringing_pongs:
+            self._ringing_pongs[call_id] = now
 
     def on_msg(self, from_id: str, text: str, addr: tuple) -> None:
         host, port = addr[0], addr[1]
