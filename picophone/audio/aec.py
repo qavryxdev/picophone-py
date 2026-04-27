@@ -152,6 +152,61 @@ class _WebrtcAec:
             pass
 
 
+class _DfnPostProcessor:
+    """DeepFilterNet3 neural noise + residual-echo + dereverb post-processor.
+
+    Cascaded after the linear FDAF stage:  raw mic -> FDAF (kills linear echo)
+    -> DFN (kills residual non-linear echo, background noise, room reverb).
+    Closely mirrors WebRTC AEC3's architecture (linear AEC + neural NLP).
+    """
+
+    def __init__(self, frame_samples: int, sample_rate_hz: int) -> None:
+        # Older deepfilternet (0.5.6) imports torchaudio.backend.common which
+        # was removed in torchaudio 2.1+.  Stub it before df.enhance loads.
+        import sys, types
+        if "torchaudio.backend.common" not in sys.modules:
+            ta_be = types.ModuleType("torchaudio.backend")
+            class _AudioMetaData: pass
+            m = types.ModuleType("torchaudio.backend.common")
+            m.AudioMetaData = _AudioMetaData
+            ta_be.common = m
+            sys.modules["torchaudio.backend"]        = ta_be
+            sys.modules["torchaudio.backend.common"] = m
+
+        import torch
+        from df.enhance import init_df, enhance
+        self._torch = torch
+        self._enhance = enhance
+        self._model, self._state, _ = init_df()
+        if self._state.sr() != sample_rate_hz:
+            log.warning("DFN sample rate %d != engine %d; DFN expects 48 kHz",
+                        self._state.sr(), sample_rate_hz)
+        self._frame = frame_samples
+
+    def process(self, pcm_int16: np.ndarray) -> np.ndarray:
+        if pcm_int16.size == 0:
+            return pcm_int16
+        sig = pcm_int16.astype(np.float32) / 32768.0
+        with self._torch.no_grad():
+            out = self._enhance(self._model, self._state,
+                                self._torch.from_numpy(sig).unsqueeze(0))
+        cleaned = out.squeeze().cpu().numpy()
+        return (cleaned * 32768.0).clip(-32768, 32767).astype(np.int16)
+
+
+def make_post(frame_samples: int, sample_rate_hz: int, enable_dfn: bool):
+    """Return an optional post-processor with .process(int16) -> int16, or None."""
+    if not enable_dfn:
+        return None
+    try:
+        post = _DfnPostProcessor(frame_samples, sample_rate_hz)
+        log.info("AI post-processor: DeepFilterNet3 (CPU)")
+        return post
+    except Exception as e:  # noqa: BLE001
+        log.warning("DeepFilterNet unavailable (%s); skipping AI post", e)
+        return None
+
+
 def make_aec(frame_samples: int, sample_rate_hz: int, ns: bool = True, vad: bool = True,
              prefer_webrtc: bool = True) -> Aec:
     if prefer_webrtc:
@@ -161,5 +216,5 @@ def make_aec(frame_samples: int, sample_rate_hz: int, ns: bool = True, vad: bool
             return ec
         except Exception as e:  # noqa: BLE001
             log.info("AEC: webrtc binding unavailable (%s); falling back to FDAF", e)
-    log.info("AEC: NumPy FDAF (block=%d, fs=%d Hz)", frame_samples, sample_rate_hz)
+    log.info("AEC: NumPy FDAF + Wiener post (block=%d, fs=%d Hz)", frame_samples, sample_rate_hz)
     return FdafAec(frame_samples)

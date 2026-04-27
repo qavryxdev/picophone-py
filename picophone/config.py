@@ -24,6 +24,7 @@ class AudioCfg:
     aec: bool = True
     ns: bool = True
     vad: bool = True
+    dfn: bool = False                  # DeepFilterNet AI post-processor (heavy)
     input_threshold_db: float = -50.0
     in_gain_db: float = 0.0
     out_gain_db: float = 0.0

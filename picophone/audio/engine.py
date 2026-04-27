@@ -8,7 +8,7 @@ from typing import Callable
 
 import numpy as np
 
-from picophone.audio.aec import Aec, NullAec, make_aec
+from picophone.audio.aec import Aec, NullAec, make_aec, make_post
 from picophone.config import AudioCfg
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,7 @@ class AudioEngine:
         self._enc = None
         self._dec = None
         self._aec: Aec = NullAec()
+        self._post = None             # neural post-processor (DFN), exclusive with AEC
         self._jitter: deque[bytes] = deque(maxlen=64)
         self._render_q: deque[np.ndarray] = deque(maxlen=8)   # ~160ms at 20ms frames
         self._lock = threading.Lock()
@@ -89,8 +90,22 @@ class AudioEngine:
         self._enc = opuslib.Encoder(rate, 1, opuslib.APPLICATION_VOIP)
         self._enc.bitrate = self.cfg.opus_bitrate_bps
         self._dec = opuslib.Decoder(rate, 1)
-        self._aec = make_aec(self._frame_samples, rate, ns=self.cfg.ns, vad=self.cfg.vad) \
-                    if self.cfg.aec else NullAec()
+        # AI mode (DFN) and classic mode (FDAF) are mutually exclusive: when
+        # DFN is on, FDAF is bypassed to avoid two stages fighting over the
+        # same residual.  DFN handles noise + dereverb on its own.
+        if self.cfg.dfn:
+            self._aec  = NullAec()
+            self._post = make_post(self._frame_samples, rate, enable_dfn=True)
+            if self._post is None:
+                # Fallback: DFN failed to load; use classic FDAF instead.
+                self._aec = make_aec(self._frame_samples, rate,
+                                     ns=self.cfg.ns, vad=self.cfg.vad) \
+                            if self.cfg.aec else NullAec()
+        else:
+            self._aec  = make_aec(self._frame_samples, rate,
+                                  ns=self.cfg.ns, vad=self.cfg.vad) \
+                        if self.cfg.aec else NullAec()
+            self._post = None
 
         self._stream_in = sd.InputStream(
             samplerate=rate, channels=1, dtype="int16",
@@ -112,6 +127,7 @@ class AudioEngine:
         self._stream_in = self._stream_out = None
         self._enc = self._dec = None
         self._aec = NullAec()
+        self._post = None
         self._render_q.clear()
 
     @staticmethod
@@ -130,7 +146,11 @@ class AudioEngine:
         pcm = indata[:, 0].copy()
         with self._lock:
             render = self._render_q.popleft() if self._render_q else self._silent_render
-        pcm = self._aec.process(pcm, render)
+        # Either FDAF (classic) or DFN (AI) — never both.
+        if self._post is not None:
+            pcm = self._post.process(pcm)
+        else:
+            pcm = self._aec.process(pcm, render)
         if self.in_gain != 1.0:
             scaled = pcm.astype(np.float32) * self.in_gain
             pcm = np.clip(scaled, -32768, 32767).astype(np.int16)

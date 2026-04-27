@@ -96,7 +96,13 @@ class PrefsDialog(QDialog):
         self.sb_bitrate = QSpinBox(); self.sb_bitrate.setRange(6_000, 128_000); self.sb_bitrate.setSingleStep(2000)
         self.sb_bitrate.setSuffix(" bps")
 
-        self.cb_aec = QCheckBox("Echo cancellation (FDAF)")
+        self.cb_aec = QCheckBox("Echo cancellation — classic FDAF + Wiener (fast, ~5 MB)")
+        self.cb_dfn = QCheckBox("AI mode — DeepFilterNet3 neural NS + dereverb (heavy, ~150 MB)")
+        self.cb_dfn.setToolTip("Replaces the classic AEC with a neural network "
+                                "(DeepFilterNet3, same family as Krisp / Skype).\n"
+                                "Best on headphones / quiet rooms; doesn't need the "
+                                "playback reference signal.\n"
+                                "Mutually exclusive with the classic AEC checkbox.")
         self.cb_ns  = QCheckBox("Noise suppression (when AEC backend supports it)")
         self.cb_vad = QCheckBox("Voice activity detection / silence threshold")
 
@@ -109,8 +115,12 @@ class PrefsDialog(QDialog):
         f.addRow("Frame size:",     self.cb_frame)
         f.addRow("Opus bitrate:",   self.sb_bitrate)
         f.addRow(self.cb_aec)
+        f.addRow(self.cb_dfn)
         f.addRow(self.cb_ns)
         f.addRow(self.cb_vad)
+        # Make AEC and DFN mutually exclusive.
+        self.cb_aec.toggled.connect(lambda on: on and self.cb_dfn.setChecked(False))
+        self.cb_dfn.toggled.connect(lambda on: on and self.cb_aec.setChecked(False))
         f.addRow("Silence threshold:", self.sp_thresh)
         return page
 
@@ -141,7 +151,8 @@ class PrefsDialog(QDialog):
         self._select(self.cb_rate,  a.sample_rate_hz)
         self._select(self.cb_frame, a.frame_ms)
         self.sb_bitrate.setValue(a.opus_bitrate_bps)
-        self.cb_aec.setChecked(a.aec)
+        self.cb_aec.setChecked(a.aec and not a.dfn)
+        self.cb_dfn.setChecked(a.dfn)
         self.cb_ns.setChecked(a.ns)
         self.cb_vad.setChecked(a.vad)
         self.sp_thresh.setValue(a.input_threshold_db)
@@ -174,6 +185,7 @@ class PrefsDialog(QDialog):
         a.frame_ms        = int(self.cb_frame.currentData())
         a.opus_bitrate_bps = int(self.sb_bitrate.value())
         a.aec = self.cb_aec.isChecked()
+        a.dfn = self.cb_dfn.isChecked()
         a.ns  = self.cb_ns.isChecked()
         a.vad = self.cb_vad.isChecked()
         a.input_threshold_db = float(self.sp_thresh.value())

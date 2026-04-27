@@ -42,6 +42,13 @@ echo === Step 2: install build tools + runtime deps in Py 3.12 ==========
 "%PY312%" -m pip install --quiet --no-warn-script-location ^
     nuitka ordered-set zstandard ^
     PySide6 sounddevice numpy opuslib pyogg cryptography zeroconf tomli-w || goto :error
+REM DeepFilterNet (AI mode) is optional; only bundle if it's already installed.
+set DFN_FLAGS=
+"%PY312%" -c "import df" 2>nul
+if errorlevel 1 goto :no_dfn
+echo Bundling DeepFilterNet3 (AI mode) into the exe.
+set DFN_FLAGS=--include-package=df --include-package=deepfilterlib --include-package=torch --include-package=torchaudio
+:no_dfn
 
 REM ------------------------------------------------------------------
 echo === Step 3: locate bundled opus.dll (from pyogg) ===================
@@ -86,6 +93,7 @@ echo Using %NUMBER_OF_PROCESSORS% parallel jobs
     --windows-icon-from-ico="assets\icons\picophone.ico" ^
     --output-dir=dist\nuitka ^
     --output-filename=PicoPhone-Py.exe ^
+    %DFN_FLAGS% ^
     picophone\__main__.py || goto :error
 
 REM ------------------------------------------------------------------

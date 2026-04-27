@@ -1,1 +1,1 @@
-__version__ = "0.3.0"  # mux+keepalive, sliders+mute, ring, popup notifications
+__version__ = "0.4.0"  # + DeepFilterNet3 AI noise/echo (optional)
