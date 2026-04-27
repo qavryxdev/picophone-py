@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, Signal
 from picophone.audio.engine import AudioEngine
 from picophone.config import Config
 from picophone.crypto import derive_media_key as _derive_media_key
-from picophone.net.media import MediaSecurity, MediaSession, open_media
+from picophone.net.media import MediaSecurity, MediaSession, new_ssrc
 from picophone.net.signaling import (
     PROTOCOL_VERSION, CallInvite, SignalingServer, start_server,
 )
@@ -46,12 +46,14 @@ class CallController(QObject):
         self._thread: threading.Thread | None = None
         self._sig_transport = None
         self._sig: SignalingServer | None = None
-        self._media_transport = None
         self._media: MediaSession | None = None
+        self._media_peer: tuple | None = None
         self._engine: AudioEngine | None = None
         self._sec = MediaSecurity()
         self._discovery = None
         self._pending: dict[str, _Pending] = {}
+        self._keepalive_task: asyncio.Task | None = None
+        self._last_pong: float = 0.0
         self._pending_invites: dict[str, CallInvite] = {}
         self._active_id: str | None = None
         self._active_peer: tuple | None = None
@@ -81,6 +83,8 @@ class CallController(QObject):
                 on_reject=self.on_reject,
                 on_bye=self.on_bye,
                 on_msg=self.on_msg,
+                on_media=self._on_media_datagram,
+                on_pong=self.on_pong,
             )
         except OSError as e:
             log.error("Cannot bind signaling port %d: %s", self.cfg.net.port, e)
@@ -116,8 +120,10 @@ class CallController(QObject):
             except Exception: log.exception("discovery.close failed")
             self._discovery = None
         if self._sig_transport:
-            self._sig_transport.close()
+            try: self._sig_transport.close()
+            except Exception: pass
             self._sig_transport = None
+            self._sig = None
 
     # -------- public API (GUI thread) --------
 
@@ -145,7 +151,7 @@ class CallController(QObject):
             "tx_bytes": m.bytes_sent if m else 0,
             "rx_bytes": m.bytes_recv if m else 0,
             "decrypt_fail": m.pkts_decrypt_fail if m else 0,
-            "peer":   (m.peer       if m else None),
+            "peer":    self._media_peer,
             "key_set": bool(self._sec.key),
             "engine_running": self._engine is not None,
         }
@@ -162,19 +168,19 @@ class CallController(QObject):
             self.log_event.emit(f"Cannot resolve {target}: {e}")
             return
 
-        media_port = self._pick_media_port()
         nonce_a = os.urandom(16)
-        await self._open_media(media_port)
+        self._open_media()
         self.call_state.emit("calling")
         self.log_event.emit(f"Calling {target} -> {peer[0]}:{peer[1]}")
 
-        cid = self._sig.invite(peer, media_port, nonce_a)
+        # Multiplex: signaling and media share the signaling port.
+        cid = self._sig.invite(peer, self.cfg.net.port, nonce_a)
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()
         self._pending[cid] = _Pending(cid, peer, waiter, nonce_a)
 
         try:
-            accepted_peer_media, nonce_b = await asyncio.wait_for(waiter, timeout=30.0)
+            _accepted_peer_media, nonce_b = await asyncio.wait_for(waiter, timeout=30.0)
         except asyncio.TimeoutError:
             self._pending.pop(cid, None)
             await self._end_call()
@@ -182,8 +188,9 @@ class CallController(QObject):
             return
 
         self._sec.key = _derive_media_key(self.cfg.net.password, nonce_a, nonce_b) if self.cfg.net.encrypt else b""
-        await self._connect_media_to(peer[0], accepted_peer_media)
+        self._media_peer = peer
         self._active_id, self._active_peer = cid, peer
+        self._start_keepalive()
         self.call_state.emit("in-call")
         self.log_event.emit(f"Call accepted (encrypted={bool(self._sec.key)})")
 
@@ -191,13 +198,13 @@ class CallController(QObject):
         inv = self._pending_invites.pop(call_id, None)
         if inv is None or self._sig is None:
             return
-        media_port = self._pick_media_port()
         nonce_b = os.urandom(16)
         self._sec.key = _derive_media_key(self.cfg.net.password, inv.nonce_a, nonce_b) if self.cfg.net.encrypt else b""
-        await self._open_media(media_port)
-        self._sig.accept(call_id, media_port, inv.addr, nonce_b)
-        await self._connect_media_to(inv.addr[0], inv.media_port)
+        self._open_media()
+        self._sig.accept(call_id, self.cfg.net.port, inv.addr, nonce_b)
+        self._media_peer = inv.addr
         self._active_id, self._active_peer = call_id, inv.addr
+        self._start_keepalive()
         self.call_state.emit("in-call")
         self.log_event.emit(f"Connected to {inv.from_id} (encrypted={bool(self._sec.key)})")
 
@@ -209,16 +216,16 @@ class CallController(QObject):
         self.call_state.emit("idle")
 
     async def _end_call(self) -> None:
+        self._stop_keepalive()
         if self._active_id and self._active_peer and self._sig:
             self._sig.bye(self._active_id, self._active_peer)
         self._active_id = self._active_peer = None
+        self._media_peer = None
         if self._engine:
             try: self._engine.stop()
             except Exception: log.exception("engine.stop failed")
             self._engine = None
-        if self._media_transport:
-            self._media_transport.close()
-        self._media_transport = self._media = None
+        self._media = None
         self.call_state.emit("idle")
 
     # -------- signaling callbacks --------
@@ -248,6 +255,11 @@ class CallController(QObject):
             asyncio.create_task(self._end_call())
             self.log_event.emit("Remote hung up")
 
+    def on_pong(self, call_id: str, _addr: tuple) -> None:
+        if call_id == self._active_id:
+            import time as _t
+            self._last_pong = _t.monotonic()
+
     def on_msg(self, from_id: str, text: str, addr: tuple) -> None:
         host, port = addr[0], addr[1]
         peer_str = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
@@ -269,10 +281,9 @@ class CallController(QObject):
 
     # -------- media wiring --------
 
-    async def _open_media(self, port: int) -> None:
-        self._media_transport, self._media = await open_media(
-            port, self._sec, self._on_media_payload, bind_v6=self.cfg.net.bind_v6,
-        )
+    def _open_media(self) -> None:
+        """Set up media session that shares the signaling socket (multiplexed)."""
+        self._media = MediaSession(new_ssrc(), self._sec, self._on_media_payload)
         self._engine = AudioEngine(self.cfg.audio, self._on_audio_packet)
         try:
             self._engine.start()
@@ -281,16 +292,26 @@ class CallController(QObject):
             self.log_event.emit(f"Audio start failed: {e}")
             self._engine = None
 
-    async def _connect_media_to(self, host: str, port: int) -> None:
+    def _on_audio_packet(self, payload: bytes) -> None:
+        """PortAudio thread -> asyncio thread: build packet, send via signaling socket."""
+        if self._loop and self._media and self._engine:
+            samples = self._engine._frame_samples
+            self._loop.call_soon_threadsafe(self._send_media, payload, samples)
+
+    def _send_media(self, opus_payload: bytes, samples: int) -> None:
+        if not (self._media and self._media_peer and self._sig_transport):
+            return
+        wire = self._media.make_packet(opus_payload, samples)
+        try:
+            self._sig_transport.sendto(wire, self._media_peer)
+        except OSError as e:
+            log.debug("media sendto failed: %s", e)
+
+    def _on_media_datagram(self, data: bytes, addr: tuple) -> None:
+        """Called by SignalingServer for first-byte-binary datagrams."""
         if self._media is None:
             return
-        addr = await _resolve(host, port, prefer_v6=self.cfg.net.bind_v6)
-        self._media.peer = addr
-
-    def _on_audio_packet(self, payload: bytes) -> None:
-        # called from PortAudio thread → hop to asyncio loop
-        if self._loop and self._media:
-            self._loop.call_soon_threadsafe(self._media.send, payload, self._engine._frame_samples)
+        self._media.feed(data)
 
     def _on_media_payload(self, payload: bytes) -> None:
         if self._engine:
@@ -303,8 +324,37 @@ class CallController(QObject):
             return
         asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    def _pick_media_port(self) -> int:
-        return self.cfg.net.port + 1
+    # -------- keepalive --------
+
+    KEEPALIVE_INTERVAL = 3.0     # send PING every 3 s
+    KEEPALIVE_TIMEOUT  = 12.0    # drop call after 12 s without PONG
+
+    def _start_keepalive(self) -> None:
+        import time as _t
+        self._last_pong = _t.monotonic()
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+
+    def _stop_keepalive(self) -> None:
+        if self._keepalive_task and not self._keepalive_task.done():
+            self._keepalive_task.cancel()
+        self._keepalive_task = None
+
+    async def _keepalive_loop(self) -> None:
+        import time as _t
+        try:
+            while self._active_id and self._sig and self._active_peer:
+                await asyncio.sleep(self.KEEPALIVE_INTERVAL)
+                if not (self._active_id and self._active_peer and self._sig):
+                    return
+                self._sig.ping(self._active_id, self._active_peer)
+                if _t.monotonic() - self._last_pong > self.KEEPALIVE_TIMEOUT:
+                    self.log_event.emit("Connection lost (keepalive timeout)")
+                    await self._end_call()
+                    return
+        except asyncio.CancelledError:
+            pass
 
 
 async def _resolve(target: str, default_port: int, prefer_v6: bool) -> tuple:

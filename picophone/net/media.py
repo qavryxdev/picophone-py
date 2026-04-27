@@ -1,9 +1,15 @@
+"""RTP-like media framing + AES-128-GCM payload encryption.
+
+Unlike the earlier version, MediaSession does NOT own a UDP socket. It only
+encodes outgoing packets (``make_packet``) and decodes incoming bytes
+(``feed``). The actual datagrams are sent and received via the signaling
+socket (multiplexed by first-byte dispatch in SignalingServer) so a single
+firewall hole on the signaling port covers both signaling and media.
+"""
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-import socket
 import struct
 from dataclasses import dataclass
 from typing import Callable
@@ -18,7 +24,18 @@ HEADER_FMT = "!BBHII"  # ver/pt | flags | seq | ts | ssrc
 HEADER_LEN = struct.calcsize(HEADER_FMT)
 NONCE_LEN = 12
 
+# First byte of an RTP-like packet: (RTP_VERSION << 6) | (PT_OPUS & 0x7F)
+#   = (2 << 6) | (111 & 0x7F) = 0x80 | 0x6F = 0xEF
+# JSON signaling datagrams begin with '{' = 0x7B, so the first byte is enough
+# to dispatch.
+RTP_FIRST_BYTE = (RTP_VERSION << 6) | (PT_OPUS & 0x7F)
+
 PayloadCallback = Callable[[bytes], None]
+
+
+def is_media_datagram(data: bytes) -> bool:
+    """True if the first byte looks like our RTP-like media header."""
+    return len(data) >= HEADER_LEN and data[0] == RTP_FIRST_BYTE
 
 
 @dataclass
@@ -39,13 +56,13 @@ class MediaSecurity:
         return AESGCM(self.key).decrypt(blob[:NONCE_LEN], blob[NONCE_LEN:], aad)
 
 
-class MediaSession(asyncio.DatagramProtocol):
+class MediaSession:
+    """Stateless-ish RTP-like packetiser. Owns no socket: caller routes bytes."""
+
     def __init__(self, ssrc: int, sec: MediaSecurity, on_payload: PayloadCallback) -> None:
         self.ssrc = ssrc
         self.sec = sec
         self.on_payload = on_payload
-        self.peer: tuple | None = None
-        self.transport: asyncio.DatagramTransport | None = None
         self._seq = 0
         self._ts = 0
         # diagnostics
@@ -55,11 +72,20 @@ class MediaSession(asyncio.DatagramProtocol):
         self.bytes_sent = 0
         self.bytes_recv = 0
 
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = transport  # type: ignore[assignment]
+    def make_packet(self, opus_payload: bytes, samples: int) -> bytes:
+        ver_pt = RTP_FIRST_BYTE
+        hdr = struct.pack(HEADER_FMT, ver_pt, 0, self._seq & 0xFFFF,
+                          self._ts & 0xFFFFFFFF, self.ssrc)
+        self._seq = (self._seq + 1) & 0xFFFF
+        self._ts = (self._ts + samples) & 0xFFFFFFFF
+        body = self.sec.encrypt(opus_payload, hdr)
+        wire = hdr + body
+        self.pkts_sent += 1
+        self.bytes_sent += len(wire)
+        return wire
 
-    def datagram_received(self, data: bytes, addr) -> None:
-        if len(data) < HEADER_LEN:
+    def feed(self, data: bytes) -> None:
+        if not is_media_datagram(data):
             return
         self.pkts_recv += 1
         self.bytes_recv += len(data)
@@ -68,38 +94,10 @@ class MediaSession(asyncio.DatagramProtocol):
             payload = self.sec.decrypt(rest, hdr)
         except Exception:  # noqa: BLE001
             self.pkts_decrypt_fail += 1
-            log.debug("decrypt failed from %s", addr)
+            log.debug("decrypt failed (%d B blob)", len(data))
             return
         self.on_payload(payload)
 
-    def send(self, opus_payload: bytes, samples: int) -> None:
-        if self.transport is None or self.peer is None:
-            return
-        ver_pt = (RTP_VERSION << 6) | (PT_OPUS & 0x7F)
-        hdr = struct.pack(HEADER_FMT, ver_pt, 0, self._seq & 0xFFFF, self._ts & 0xFFFFFFFF, self.ssrc)
-        self._seq = (self._seq + 1) & 0xFFFF
-        self._ts = (self._ts + samples) & 0xFFFFFFFF
-        body = self.sec.encrypt(opus_payload, hdr)
-        wire = hdr + body
-        self.transport.sendto(wire, self.peer)
-        self.pkts_sent += 1
-        self.bytes_sent += len(wire)
 
-
-async def open_media(port: int, sec: MediaSecurity, on_payload: PayloadCallback,
-                     bind_v6: bool = True, ssrc: int | None = None
-                     ) -> tuple[asyncio.DatagramTransport, MediaSession]:
-    loop = asyncio.get_running_loop()
-    family = socket.AF_INET6 if bind_v6 else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_DGRAM)
-    if bind_v6:
-        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        sock.bind(("::", port))
-    else:
-        sock.bind(("0.0.0.0", port))
-    if ssrc is None:
-        ssrc = int.from_bytes(os.urandom(4), "big")
-    transport, protocol = await loop.create_datagram_endpoint(
-        lambda: MediaSession(ssrc, sec, on_payload), sock=sock,
-    )
-    return transport, protocol
+def new_ssrc() -> int:
+    return int.from_bytes(os.urandom(4), "big")

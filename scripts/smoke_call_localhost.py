@@ -72,10 +72,10 @@ def main() -> None:
     print(f"OK: bob   key = {b._sec.key.hex()[:16]}..  ({len(b._sec.key)} B)")
     assert a._sec.key == b._sec.key and len(a._sec.key) == 16
 
-    # actually send some encrypted media through the open MediaSession
-    if a._media and a._media.peer:
+    # actually send some encrypted media through the multiplexed signaling socket
+    if a._media and a._media_peer:
         for i in range(5):
-            a._loop.call_soon_threadsafe(a._media.send, b"opus_" + str(i).encode().rjust(3, b"0"), 960)
+            a._loop.call_soon_threadsafe(a._send_media, b"opus_" + str(i).encode().rjust(3, b"0"), 960)
         time.sleep(0.4)
     print("OK: media packets pumped (encrypted with derived key)")
 

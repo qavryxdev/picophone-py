@@ -1,46 +1,31 @@
-"""Media path roundtrip on ::1: send N synthetic Opus-shaped packets, verify all received."""
+"""Media path roundtrip: send N RTP-like packets through MediaSession.make_packet
+and feed them back into a peer session. Verify all received with AES-GCM."""
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from picophone.net.media import MediaSecurity, open_media
+from picophone.net.media import MediaSecurity, MediaSession, new_ssrc
 
 
-async def main() -> None:
+def main() -> None:
     received: list[bytes] = []
-    done = asyncio.Event()
+    sec = MediaSecurity(key=os.urandom(16))
+    a = MediaSession(new_ssrc(), sec, lambda _p: None)
+    b = MediaSession(new_ssrc(), sec, lambda p: received.append(p))
+
     N = 50
-
-    def on_payload(p: bytes) -> None:
-        received.append(p)
-        if len(received) >= N:
-            done.set()
-
-    sec = MediaSecurity(key=os.urandom(16))   # AES-128-GCM
-    t_a, ses_a = await open_media(0, sec, lambda _p: None, bind_v6=True)
-    t_b, ses_b = await open_media(0, sec, on_payload,      bind_v6=True)
-
-    port_b = t_b.get_extra_info("socket").getsockname()[1]
-    ses_a.peer = ("::1", port_b, 0, 0)
-
     for i in range(N):
-        ses_a.send(b"opus_payload_" + str(i).encode().rjust(4, b"0"), 960)
+        wire = a.make_packet(b"opus_payload_" + str(i).encode().rjust(4, b"0"), 960)
+        b.feed(wire)
 
-    try:
-        await asyncio.wait_for(done.wait(), timeout=2.0)
-    except asyncio.TimeoutError:
-        print(f"FAIL: only {len(received)}/{N} received")
-        sys.exit(1)
-
-    assert len(received) == N
+    assert len(received) == N, f"only {len(received)}/{N} received"
     print(f"OK: {N} encrypted media packets roundtripped (first={received[0]!r})")
-    t_a.close(); t_b.close()
+    print(f"OK: a sent {a.pkts_sent} pkts/{a.bytes_sent} B, b recv {b.pkts_recv} pkts")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
