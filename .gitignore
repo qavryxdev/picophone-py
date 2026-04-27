@@ -22,3 +22,4 @@ opus.dll
 # user runtime
 *.toml.bak
 picophone.log*
+picophone-smoke.toml
