@@ -30,6 +30,7 @@ RUN python3 -m venv /opt/venv \
 
 RUN /opt/venv/bin/python -m nuitka \
         --onefile \
+        --jobs=$(nproc) \
         --assume-yes-for-downloads \
         --enable-plugin=pyside6 \
         --include-data-files=picophone/ui/skin.qss=picophone/ui/skin.qss \

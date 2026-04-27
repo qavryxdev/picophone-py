@@ -34,8 +34,12 @@ python3 -m pip install -e .
 # --- build -------------------------------------------------------------------
 rm -rf build/ "dist/${NAME}"
 
+JOBS=$(nproc 2>/dev/null || echo 4)
+echo "Using $JOBS parallel jobs"
+
 python3 -m PyInstaller \
     --noconfirm --windowed --onefile --clean \
+    --workpath build --distpath dist \
     --name "${NAME}" \
     --add-data "picophone/ui/skin.qss:picophone/ui" \
     --collect-submodules zeroconf \

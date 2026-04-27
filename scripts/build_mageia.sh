@@ -22,9 +22,11 @@ fi
 # ---------- 1. install system deps (urpmi or dnf) ---------------------------
 PACKAGES=(
     python3 python3-pip python3-devel
-    gcc gcc-c++ make patchelf chrpath
-    portaudio libopus-devel libffi-devel
-    fontconfig dbus-libs libxcb1 libX11_6
+    gcc gcc-c++ make patchelf chrpath sudo
+    lib64opus0 lib64opus-devel
+    lib64portaudio2 lib64portaudio-devel
+    lib64ffi-devel
+    fontconfig lib64xcb1 lib64x11_6
 )
 if command -v urpmi >/dev/null 2>&1; then
     INSTALL="urpmi --auto"
@@ -56,9 +58,12 @@ pip install --quiet \
 # ---------- 3. Nuitka onefile build ----------------------------------------
 echo "=== Nuitka onefile build (5-15 min on first run) ========================"
 rm -rf dist/nuitka
+JOBS=$(nproc 2>/dev/null || echo 4)
+echo "Using $JOBS parallel jobs"
 
 python -m nuitka \
     --onefile \
+    --jobs="$JOBS" \
     --assume-yes-for-downloads \
     --enable-plugin=pyside6 \
     --include-data-files=picophone/ui/skin.qss=picophone/ui/skin.qss \
