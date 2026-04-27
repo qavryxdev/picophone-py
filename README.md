@@ -95,7 +95,7 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 
 ## Build single-file binary
 
-### Windows — portable Python distribution
+### Windows — single-binary distribution (cx_Freeze)
 
 ```cmd
 scripts\build_windows.bat
@@ -104,23 +104,19 @@ scripts\build_windows.bat
 Produces `dist\PicoPhone-Py\` containing:
 
 ```
-PicoPhone-Py.bat            ← double-click to run
-PicoPhone-Py-debug.bat      ← run with console attached
-python\python.exe           ← official, signed by Python Software Foundation
-python\Lib\site-packages\   ← all deps (PySide6, opus.dll via pyogg, …)
-picophone\                  ← our source
-assets\
+PicoPhone-Py.exe       ← double-click this
+python313.dll
+opus.dll
+lib\                   ← Qt DLLs, numpy, opuslib, zeroconf, …
 ```
 
-Distribute by zipping the entire `dist\PicoPhone-Py\` folder (~700 MB
-expanded, ~250 MB zipped — Qt is the bulk).
+The `.exe` is a tiny native loader (~30 KB) that links against
+`python313.dll` directly. No self-extracting bootloader → no Avast
+`Win64:Malware-gen` false positive (which is what `pyinstaller --onefile`
+and `--onedir` both trigger).
 
-**Why not PyInstaller?** PyInstaller produces a self-extracting bootloader
-that Avast / AVG / Defender flag as `Win64:Malware-gen` (false positive,
-shared signature with some malware packers). Bundling python.org's signed
-embeddable Python instead avoids the AV trigger entirely — the launcher is
-a `.bat` that just runs `python.exe -m picophone`, and `python.exe` is
-already trusted because PSF signs it.
+Distribute by zipping the whole `dist\PicoPhone-Py\` folder (~250 MB
+zipped — Qt is the bulk).
 
 ### Linux
 ```bash
