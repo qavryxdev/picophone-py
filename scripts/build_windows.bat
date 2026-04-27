@@ -58,13 +58,13 @@ echo === Step 4: Nuitka onefile build (this takes 5-15 min on first run) ==
 if exist dist\nuitka rmdir /s /q dist\nuitka
 
 REM Use all CPU cores for compilation.
-for /f "tokens=*" %%J in ('wmic cpu get NumberOfLogicalProcessors /value ^| find "="') do set %%J
-if "%NumberOfLogicalProcessors%"=="" set NumberOfLogicalProcessors=4
-echo Using %NumberOfLogicalProcessors% parallel jobs
+REM NUMBER_OF_PROCESSORS is a built-in Windows env variable (logical CPU count).
+if "%NUMBER_OF_PROCESSORS%"=="" set NUMBER_OF_PROCESSORS=4
+echo Using %NUMBER_OF_PROCESSORS% parallel jobs
 
 "%PY312%" -m nuitka ^
     --onefile ^
-    --jobs=%NumberOfLogicalProcessors% ^
+    --jobs=%NUMBER_OF_PROCESSORS% ^
     --mingw64 ^
     --assume-yes-for-downloads ^
     --windows-console-mode=disable ^

@@ -137,6 +137,19 @@ class CallController(QObject):
         if self._engine:
             self._engine.muted = muted
 
+    def media_stats(self) -> dict:
+        m = self._media
+        return {
+            "tx_pkts":  m.pkts_sent  if m else 0,
+            "rx_pkts":  m.pkts_recv  if m else 0,
+            "tx_bytes": m.bytes_sent if m else 0,
+            "rx_bytes": m.bytes_recv if m else 0,
+            "decrypt_fail": m.pkts_decrypt_fail if m else 0,
+            "peer":   (m.peer       if m else None),
+            "key_set": bool(self._sec.key),
+            "engine_running": self._engine is not None,
+        }
+
     # -------- async impl --------
 
     async def _place_call(self, target: str) -> None:

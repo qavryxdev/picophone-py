@@ -45,6 +45,8 @@ class MainWindow(QMainWindow):
         self._drag_offset: QPoint | None = None
         self._call_state = "idle"
         self._chats: dict[str, ChatWindow] = {}
+        self._prev_stats: dict | None = None
+        self._prev_stats_t = 0.0
         self._build_ui()
         self._apply_skin()
         self._wire()
@@ -284,16 +286,42 @@ class MainWindow(QMainWindow):
         self.cfg.save()
 
     def _refresh_meters(self) -> None:
+        import time as _t
         eng = getattr(self.ctrl, "_engine", None)
         if eng is None:
             self.mic_bar.setValue(0); self.spk_bar.setValue(0)
             self.mic_led.set_on(False); self.spk_led.set_on(False)
+            self.lbl_tx.setText("TX:0.0k"); self.lbl_rx.setText("RX:0.0k")
             return
         mic = _rms_to_pct(eng.tx_rms)
         spk = _rms_to_pct(eng.rx_rms)
         self.mic_bar.setValue(mic); self.spk_bar.setValue(spk)
         self.mic_led.set_on(mic > 5 and not eng.muted)
         self.spk_led.set_on(spk > 5)
+
+        stats = self.ctrl.media_stats()
+        now = _t.monotonic()
+        if self._prev_stats is None:
+            self._prev_stats = stats; self._prev_stats_t = now
+            return
+        dt = max(now - self._prev_stats_t, 0.001)
+        if dt < 0.5:
+            return
+        d_tx = stats["tx_bytes"] - self._prev_stats["tx_bytes"]
+        d_rx = stats["rx_bytes"] - self._prev_stats["rx_bytes"]
+        tx_kbps = (d_tx * 8 / 1000.0) / dt
+        rx_kbps = (d_rx * 8 / 1000.0) / dt
+        self.lbl_tx.setText(f"TX:{tx_kbps:.1f}k")
+        self.lbl_rx.setText(f"RX:{rx_kbps:.1f}k")
+        # diagnostic info on hover
+        peer = stats["peer"]
+        peer_str = f"{peer[0]}:{peer[1]}" if peer else "no peer"
+        tip = (f"TX {stats['tx_pkts']} pkts {stats['tx_bytes']} B / "
+               f"RX {stats['rx_pkts']} pkts {stats['rx_bytes']} B  "
+               f"decrypt-fail {stats['decrypt_fail']}  "
+               f"peer {peer_str}  encrypted={stats['key_set']}")
+        self.lbl_tx.setToolTip(tip); self.lbl_rx.setToolTip(tip)
+        self._prev_stats = stats; self._prev_stats_t = now
 
     # ---------- frameless drag ----------
 

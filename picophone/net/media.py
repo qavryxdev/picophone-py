@@ -48,6 +48,12 @@ class MediaSession(asyncio.DatagramProtocol):
         self.transport: asyncio.DatagramTransport | None = None
         self._seq = 0
         self._ts = 0
+        # diagnostics
+        self.pkts_sent = 0
+        self.pkts_recv = 0
+        self.pkts_decrypt_fail = 0
+        self.bytes_sent = 0
+        self.bytes_recv = 0
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = transport  # type: ignore[assignment]
@@ -55,10 +61,13 @@ class MediaSession(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr) -> None:
         if len(data) < HEADER_LEN:
             return
+        self.pkts_recv += 1
+        self.bytes_recv += len(data)
         hdr, rest = data[:HEADER_LEN], data[HEADER_LEN:]
         try:
             payload = self.sec.decrypt(rest, hdr)
         except Exception:  # noqa: BLE001
+            self.pkts_decrypt_fail += 1
             log.debug("decrypt failed from %s", addr)
             return
         self.on_payload(payload)
@@ -71,7 +80,10 @@ class MediaSession(asyncio.DatagramProtocol):
         self._seq = (self._seq + 1) & 0xFFFF
         self._ts = (self._ts + samples) & 0xFFFFFFFF
         body = self.sec.encrypt(opus_payload, hdr)
-        self.transport.sendto(hdr + body, self.peer)
+        wire = hdr + body
+        self.transport.sendto(wire, self.peer)
+        self.pkts_sent += 1
+        self.bytes_sent += len(wire)
 
 
 async def open_media(port: int, sec: MediaSecurity, on_payload: PayloadCallback,
