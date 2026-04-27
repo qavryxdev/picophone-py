@@ -87,6 +87,7 @@ python -m nuitka \
     --include-data-files=assets/icons/picophone.ico=assets/icons/picophone.ico \
     --include-data-files=assets/ringin.wav=assets/ringin.wav \
     --include-package=picophone \
+    --include-module=picophone.autostart \
     --include-package=cryptography \
     --include-package=opuslib \
     --include-package=numpy \
