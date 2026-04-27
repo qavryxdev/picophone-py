@@ -99,7 +99,20 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 ```cmd
 scripts\build_windows.bat
 ```
-Produces `dist\PicoPhone-Py.exe` (one-file, frameless, bundled `opus.dll` from pyogg).
+Produces `dist\PicoPhone-Py\PicoPhone-Py.exe` plus its DLL folder.
+Distribute by zipping the whole `dist\PicoPhone-Py\` directory.
+
+**Avast / AVG / Defender false positive.** PyInstaller bundles are routinely
+flagged as `Win64:Malware-gen` because the bootloader pattern is shared with
+some malware packers — the one-folder layout we use is the least bad option.
+If your AV still quarantines the EXE, add the project folder to its
+exclusions:
+
+- **Avast:** Settings → General → Exceptions → Add Exception → Folder.
+- **Defender:** Windows Security → Virus & threat protection → Manage
+  settings → Exclusions → Add or remove exclusions → Folder.
+
+Or just run from source — `python -m picophone` doesn't trigger any AV.
 
 ### Linux
 ```bash

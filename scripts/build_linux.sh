@@ -40,7 +40,7 @@ python3 -m PyInstaller \
     --add-data "picophone/ui/skin.qss:picophone/ui" \
     --collect-submodules zeroconf \
     --collect-submodules cryptography \
-    -m picophone
+    picophone/__main__.py
 
 echo
 echo "============================================================"
