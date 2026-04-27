@@ -41,23 +41,28 @@ class FdafAec:
     """
 
     def __init__(self, frame_samples: int, mu: float = 0.5,
-                 nlp_threshold: float = 4.0, nlp_attenuation: float = 0.3,
-                 reg_load: float = 0.5) -> None:
+                 reg_load: float = 0.5,
+                 dtd_factor: float = 1.5,
+                 floor: float = 0.02) -> None:
         self.N = int(frame_samples)
         self.M = 2 * self.N
         self.mu = float(mu)
-        self.nlp_threshold = float(nlp_threshold)
-        self.nlp_atten     = float(nlp_attenuation)
-        self.reg_load      = float(reg_load)
+        self.reg_load  = float(reg_load)
+        self.dtd_factor = float(dtd_factor)        # Geigel DTD threshold
+        self.floor      = float(floor)             # Wiener gain floor (no full mute)
         self.W      = np.zeros(self.M // 2 + 1, dtype=np.complex64)
         self.x_prev = np.zeros(self.N,             dtype=np.float32)
         self._eps = 1e-6
-        self._S = np.zeros(self.M // 2 + 1, dtype=np.float32)   # smoothed |X|^2
+        self._S    = np.zeros(self.M // 2 + 1, dtype=np.float32)   # smoothed |X|^2
+        self._Pe   = np.zeros(self.M // 2 + 1, dtype=np.float32)   # smoothed |Y_hat|^2 (echo)
+        self._Pd   = np.zeros(self.M // 2 + 1, dtype=np.float32)   # smoothed |D|^2     (mic)
+        self._G    = np.ones (self.M // 2 + 1, dtype=np.float32)   # smoothed gain
 
     def reset(self) -> None:
         self.W.fill(0)
         self.x_prev.fill(0)
         self._S.fill(0)
+        self._Pe.fill(0); self._Pd.fill(0); self._G.fill(1.0)
 
     def process(self, capture_int16: np.ndarray, render_int16: np.ndarray) -> np.ndarray:
         d = capture_int16.astype(np.float32) / 32768.0
@@ -69,33 +74,62 @@ class FdafAec:
         self.x_prev = x.copy()
         X = np.fft.rfft(x_block, self.M)
 
+        # Echo estimate (frequency + time domain).
         Y = X * self.W
         y_hat = np.fft.irfft(Y, self.M)[self.N:]
         e = d - y_hat
 
+        # ---- Geigel double-talk detector ----
+        # Near-end speech is present if the mic envelope exceeds what the
+        # echo path could plausibly produce.  When DTD fires we *freeze* the
+        # filter (so the adapter doesn't diverge against near-end speech)
+        # but we don't suppress the residual — that lets the user be heard.
+        max_x = float(np.max(np.abs(x_block)) + self._eps)
+        max_d = float(np.max(np.abs(d))       + self._eps)
+        near_end_active = (max_d > self.dtd_factor * max_x) and (max_d > 5e-3)
+
+        # ---- Filter adaptation (only during far-end-only) ----
+        if not near_end_active:
+            e_pad = np.zeros(self.M, dtype=np.float32)
+            e_pad[self.N:] = e
+            E = np.fft.rfft(e_pad, self.M)
+
+            Sx = (X.real * X.real + X.imag * X.imag).astype(np.float32)
+            self._S = 0.85 * self._S + 0.15 * Sx
+            S_avg = float(np.mean(self._S))
+            denom = self._S + self.reg_load * S_avg + self._eps
+
+            grad = (np.conj(X) * E) / denom
+            grad_t = np.fft.irfft(grad, self.M)
+            grad_t[self.N:] = 0
+            self.W = (self.W + self.mu * np.fft.rfft(grad_t, self.M)).astype(np.complex64)
+
+        # ---- Wiener-style per-bin post-filter ----
+        # gain[k] = 1 - |echo[k]|^2 / |mic[k]|^2
+        # When echo dominates (far-end-only): ratio -> 1, gain -> 0 (suppress).
+        # When near-end dominates (double-talk or near-end-only): ratio < 1,
+        # gain -> 1, near-end passes through.  Power estimates are smoothed
+        # to avoid musical noise.
+        d_pad = np.zeros(self.M, dtype=np.float32)
+        d_pad[self.N:] = d
+        D = np.fft.rfft(d_pad, self.M)
+        echo_p = (Y.real * Y.real + Y.imag * Y.imag).astype(np.float32)
+        mic_p  = (D.real * D.real + D.imag * D.imag).astype(np.float32)
+        self._Pe = 0.5 * self._Pe + 0.5 * echo_p
+        self._Pd = 0.5 * self._Pd + 0.5 * mic_p
+        gain = 1.0 - self._Pe / (self._Pd + self._eps)
+        np.clip(gain, self.floor, 1.0, out=gain)
+        # Asymmetric smoothing: track *down* fast (suppress echo quickly),
+        # track *up* fast too (release on near-end speech without delay).
+        self._G = 0.3 * self._G + 0.7 * gain.astype(np.float32)
+
+        # Apply spectral gain to the residual.
         e_pad = np.zeros(self.M, dtype=np.float32)
         e_pad[self.N:] = e
-        E = np.fft.rfft(e_pad, self.M)
+        E_post = np.fft.rfft(e_pad, self.M) * self._G
+        e_out  = np.fft.irfft(E_post, self.M)[self.N:]
 
-        # Per-bin power smoothing with diagonal loading: avoids divide-by-zero on quiet bins
-        # and explosion on narrowband signals.
-        Sx = (X.real * X.real + X.imag * X.imag).astype(np.float32)
-        self._S = 0.85 * self._S + 0.15 * Sx
-        S_avg = float(np.mean(self._S))
-        denom = self._S + self.reg_load * S_avg + self._eps    # never tiny
-
-        grad = (np.conj(X) * E) / denom
-        grad_t = np.fft.irfft(grad, self.M)
-        grad_t[self.N:] = 0
-        self.W = (self.W + self.mu * np.fft.rfft(grad_t, self.M)).astype(np.complex64)
-
-        # NLP residual echo suppression when far-end dominates.
-        energy_y = float(np.mean(y_hat * y_hat) + self._eps)
-        energy_e = float(np.mean(e * e)         + self._eps)
-        if energy_y / energy_e > self.nlp_threshold:
-            e = e * self.nlp_atten
-
-        return (e * 32768.0).clip(-32768, 32767).astype(np.int16)
+        return (e_out * 32768.0).clip(-32768, 32767).astype(np.int16)
 
 
 class _WebrtcAec:
