@@ -95,24 +95,32 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 
 ## Build single-file binary
 
-### Windows
+### Windows — portable Python distribution
+
 ```cmd
 scripts\build_windows.bat
 ```
-Produces `dist\PicoPhone-Py\PicoPhone-Py.exe` plus its DLL folder.
-Distribute by zipping the whole `dist\PicoPhone-Py\` directory.
 
-**Avast / AVG / Defender false positive.** PyInstaller bundles are routinely
-flagged as `Win64:Malware-gen` because the bootloader pattern is shared with
-some malware packers — the one-folder layout we use is the least bad option.
-If your AV still quarantines the EXE, add the project folder to its
-exclusions:
+Produces `dist\PicoPhone-Py\` containing:
 
-- **Avast:** Settings → General → Exceptions → Add Exception → Folder.
-- **Defender:** Windows Security → Virus & threat protection → Manage
-  settings → Exclusions → Add or remove exclusions → Folder.
+```
+PicoPhone-Py.bat            ← double-click to run
+PicoPhone-Py-debug.bat      ← run with console attached
+python\python.exe           ← official, signed by Python Software Foundation
+python\Lib\site-packages\   ← all deps (PySide6, opus.dll via pyogg, …)
+picophone\                  ← our source
+assets\
+```
 
-Or just run from source — `python -m picophone` doesn't trigger any AV.
+Distribute by zipping the entire `dist\PicoPhone-Py\` folder (~700 MB
+expanded, ~250 MB zipped — Qt is the bulk).
+
+**Why not PyInstaller?** PyInstaller produces a self-extracting bootloader
+that Avast / AVG / Defender flag as `Win64:Malware-gen` (false positive,
+shared signature with some malware packers). Bundling python.org's signed
+embeddable Python instead avoids the AV trigger entirely — the launcher is
+a `.bat` that just runs `python.exe -m picophone`, and `python.exe` is
+already trusted because PSF signs it.
 
 ### Linux
 ```bash

@@ -1,56 +1,98 @@
 @echo off
-REM Build PicoPhone-Py for Windows as a one-folder distribution.
+REM Build a portable Windows distribution by bundling python.org's signed
+REM embeddable Python with our source.  No PyInstaller bootloader = no
+REM Win64:Malware-gen false positive from Avast / AVG / Defender.
 REM
-REM Why one-folder (not one-file)?  PyInstaller's --onefile produces a
-REM self-extracting bootloader pattern that Avast/AVG/Windows Defender
-REM frequently flag as Win64:Malware-gen (false positive).  One-folder
-REM avoids that signature and runs identically.
+REM Output: dist\PicoPhone-Py\
+REM   PicoPhone-Py.bat            (launcher)
+REM   python\python.exe           (signed by Python Software Foundation)
+REM   python\Lib\site-packages\*  (all deps incl. opus.dll via pyogg)
+REM   picophone\*                 (our source)
+REM   assets\*
 REM
-REM If your AV still complains, add this folder to its exclusion list:
-REM   Avast:    Settings > General > Exceptions > Add Exception > Folder
-REM   Defender: Windows Security > Virus & threat protection >
-REM             Manage settings > Exclusions > Add or remove exclusions
+REM Distribute by zipping the whole dist\PicoPhone-Py folder.
 REM
 REM Usage: scripts\build_windows.bat
-setlocal
+setlocal enabledelayedexpansion
 
 cd /d "%~dp0\.."
 
-python -m pip install --upgrade pip pyinstaller >nul
-python -m pip install -e . || goto :error
+set PYVER=3.13.7
+set NAME=PicoPhone-Py
+set DIST=dist\%NAME%
 
-for /f "delims=" %%I in ('python -c "import os, pyogg; print(os.path.dirname(pyogg.__file__))"') do set PYOGG_DIR=%%I
-if "%PYOGG_DIR%"=="" (
-    echo ERROR: pyogg not installed
-    goto :error
+REM ------------------------------------------------------------------
+echo.
+echo === Cleaning previous build ===========================================
+if exist "%DIST%" rmdir /s /q "%DIST%"
+mkdir "%DIST%\python" 2>nul
+mkdir "%DIST%\picophone" 2>nul
+mkdir "%DIST%\assets" 2>nul
+
+REM ------------------------------------------------------------------
+echo.
+echo === Downloading embeddable Python %PYVER% ============================
+set EMBED_URL=https://www.python.org/ftp/python/%PYVER%/python-%PYVER%-embed-amd64.zip
+set EMBED_ZIP=dist\python-embed.zip
+if not exist "%EMBED_ZIP%" (
+    powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '%EMBED_URL%' -OutFile '%EMBED_ZIP%' -UseBasicParsing" || goto :error
+)
+powershell -NoProfile -Command "Expand-Archive -Force '%EMBED_ZIP%' '%DIST%\python'" || goto :error
+
+REM Enable site-packages and add the dist root to sys.path so the picophone
+REM package (sibling of python/) is importable.
+for %%P in ("%DIST%\python\python*._pth") do (
+    powershell -NoProfile -Command "$f='%%P'; $c=Get-Content $f; $c=$c -replace '^#import site','import site'; if (-not ($c -match '^\.\.$')) { $c += '..' }; Set-Content $f $c" || goto :error
 )
 
-set NAME=PicoPhone-Py
-if exist build       rmdir /s /q build
-if exist dist\%NAME% rmdir /s /q dist\%NAME%
+REM ------------------------------------------------------------------
+echo.
+echo === Bootstrapping pip inside embed Python ============================
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%DIST%\python\get-pip.py' -UseBasicParsing" || goto :error
+"%DIST%\python\python.exe" "%DIST%\python\get-pip.py" --no-warn-script-location || goto :error
+del "%DIST%\python\get-pip.py"
 
-python -m PyInstaller ^
-    --noconfirm --windowed --noupx --clean ^
-    --name %NAME% ^
-    --add-data "picophone\ui\skin.qss;picophone\ui" ^
-    --add-binary "%PYOGG_DIR%\opus.dll;." ^
-    --collect-submodules zeroconf ^
-    --collect-submodules cryptography ^
-    picophone\__main__.py
+REM ------------------------------------------------------------------
+echo.
+echo === Installing PicoPhone-Py runtime deps =============================
+"%DIST%\python\python.exe" -m pip install --no-warn-script-location ^
+    PySide6 sounddevice numpy opuslib pyogg cryptography zeroconf tomli-w || goto :error
 
-if errorlevel 1 goto :error
+REM ------------------------------------------------------------------
+echo.
+echo === Copying project source ===========================================
+xcopy /e /y /q picophone "%DIST%\picophone\" >nul
+if exist assets xcopy /e /y /q assets "%DIST%\assets\" >nul
 
+REM ------------------------------------------------------------------
+echo.
+echo === Writing launcher =================================================
+> "%DIST%\PicoPhone-Py.bat" (
+    echo @echo off
+    echo REM PicoPhone-Py portable launcher
+    echo set HERE=%%~dp0
+    echo "%%HERE%%python\pythonw.exe" -m picophone %%*
+)
+
+> "%DIST%\PicoPhone-Py-debug.bat" (
+    echo @echo off
+    echo REM PicoPhone-Py portable launcher with console for debugging
+    echo set HERE=%%~dp0
+    echo "%%HERE%%python\python.exe" -m picophone %%*
+    echo pause
+)
+
+REM ------------------------------------------------------------------
 echo.
 echo ============================================================
-echo  Built:  dist\%NAME%\%NAME%.exe
-echo  Run:    dist\%NAME%\%NAME%.exe
-echo  Bundle: dist\%NAME%\         (zip the folder to share)
+echo  Built portable distribution: %DIST%
+echo  Run:    %DIST%\PicoPhone-Py.bat
+echo  Debug:  %DIST%\PicoPhone-Py-debug.bat   (shows console output)
+echo  Share:  zip the whole %DIST% folder
 echo ============================================================
 exit /b 0
 
 :error
 echo.
 echo BUILD FAILED.
-echo If Avast/Defender deleted the EXE, add %CD% to AV exclusions
-echo or run from source:  python -m picophone
 exit /b 1
