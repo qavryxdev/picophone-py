@@ -328,14 +328,14 @@ class MainWindow(QMainWindow):
         self.cfg.save()
         eng = getattr(self.ctrl, "_engine", None)
         if eng is not None:
-            eng.in_gain = max(0.0, v / 500.0)
+            eng.in_gain = max(0.0, min(1.0, v / 1000.0))
 
     def _on_spk_slider(self, v: int) -> None:
         self.cfg.audio.play_volume = v
         self.cfg.save()
         eng = getattr(self.ctrl, "_engine", None)
         if eng is not None:
-            eng.out_gain = max(0.0, v / 500.0)
+            eng.out_gain = max(0.0, min(1.0, v / 1000.0))
 
     def _toggle_mic_mute(self) -> None:
         eng = getattr(self.ctrl, "_engine", None)

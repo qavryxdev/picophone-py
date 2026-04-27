@@ -63,10 +63,12 @@ class AudioEngine:
         self.on_packet = on_packet
         self.muted = False
         self.spk_muted = False
-        # Linear gain factors. Sliders feed (rec_level / 500.0) and
-        # (play_volume / 500.0) so 500 -> unity, 1000 -> +6 dB.
-        self.in_gain  = max(0.0, cfg.rec_level   / 500.0)
-        self.out_gain = max(0.0, cfg.play_volume / 500.0)
+        # Linear gain factors. Sliders 0..1000 -> 0..1.0 (attenuation only).
+        # Slider at 1000 = unity gain, matching the original PicoPhone behaviour
+        # where the level controls drove the system mixer (max position = 100%).
+        # Going above 1.0 saturates and breaks the AEC's linearity assumption.
+        self.in_gain  = max(0.0, min(1.0, cfg.rec_level   / 1000.0))
+        self.out_gain = max(0.0, min(1.0, cfg.play_volume / 1000.0))
         self.tx_rms = 0.0
         self.rx_rms = 0.0
         self._frame_samples = cfg.sample_rate_hz * cfg.frame_ms // 1000
