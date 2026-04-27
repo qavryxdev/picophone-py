@@ -95,28 +95,32 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 
 ## Build single-file binary
 
-### Windows — single-binary distribution (cx_Freeze)
+### Windows — single-file portable exe (~34 MB)
 
 ```cmd
 scripts\build_windows.bat
 ```
 
-Produces `dist\PicoPhone-Py\` containing:
+Produces:
 
 ```
-PicoPhone-Py.exe       ← double-click this
-python313.dll
-opus.dll
-lib\                   ← Qt DLLs, numpy, opuslib, zeroconf, …
+dist\PicoPhone-Py-portable.exe       ← single file, ~34 MB, double-click
 ```
 
-The `.exe` is a tiny native loader (~30 KB) that links against
-`python313.dll` directly. No self-extracting bootloader → no Avast
-`Win64:Malware-gen` false positive (which is what `pyinstaller --onefile`
-and `--onedir` both trigger).
+Pipeline:
 
-Distribute by zipping the whole `dist\PicoPhone-Py\` folder (~250 MB
-zipped — Qt is the bulk).
+1. **cx_Freeze** builds `dist\PicoPhone-Py\` (a folder with the loader exe
+   + python313.dll + Qt DLLs + bundled `opus.dll`). cx_Freeze's loader is
+   not flagged by Avast (PyInstaller's bootloader is — `Win64:Malware-gen`
+   false positive).
+2. **prune_dist.py** strips unused PySide6 / Qt modules: 3D, Charts,
+   WebEngine, QML, Quick, Multimedia, Bluetooth, Sensors, translations…
+   bundle drops from ~640 MB to ~134 MB.
+3. **7-Zip SFX stub** (`7z.sfx`, signed by Igor Pavlov) wraps the pruned
+   tree into one self-extracting executable that lands in `%TEMP%` on
+   first run and launches `PicoPhone-Py.exe`.
+
+The resulting `.exe` is a single, no-dependencies, portable file.
 
 ### Linux
 ```bash
