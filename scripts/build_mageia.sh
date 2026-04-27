@@ -12,7 +12,24 @@
 # Output: dist/nuitka/PicoPhone-Py   (one file, ~45 MB)
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Building on /mnt/c/... under WSL is ~10x slower than native ext4 because every
+# file op crosses the Plan 9 bridge.  When invoked from /mnt/c we mirror the
+# project to a native location with tar (no rsync dep), build there, and copy
+# the final ELF back.  Native invocation builds in place.
+if [[ "$SRC" == /mnt/c/* ]]; then
+    WORK="$HOME/build/picophone-py"
+    echo "=== mirroring $SRC -> $WORK (native ext4) ==="
+    rm -rf "$WORK"
+    mkdir -p "$WORK"
+    ( cd "$SRC" && tar --exclude=.git --exclude=dist --exclude=build \
+                       --exclude=.venv-build --exclude=__pycache__ \
+                       --exclude=nuitka-build -cf - . ) | ( cd "$WORK" && tar -xf - )
+    cd "$WORK"
+else
+    cd "$SRC"
+fi
 
 # ---------- 0. detect distro ------------------------------------------------
 if ! grep -qi mageia /etc/os-release 2>/dev/null; then
@@ -82,12 +99,20 @@ EXE="dist/nuitka/PicoPhone-Py"
 test -x "$EXE" || { echo "ERROR: build did not produce $EXE"; exit 1; }
 size_mb=$(du -m "$EXE" | cut -f1)
 
+# If we built in $HOME/build, copy the artifact back to the source tree so the
+# user finds it where they expect.
+if [[ "$SRC" != "$(pwd)" ]]; then
+    mkdir -p "$SRC/dist/nuitka"
+    cp -v "$EXE" "$SRC/dist/nuitka/PicoPhone-Py"
+    EXE="$SRC/dist/nuitka/PicoPhone-Py"
+fi
+
 echo
 echo "============================================================"
 echo " Built true single-file Mageia binary:"
 echo "   $EXE   (${size_mb} MB)"
 echo " glibc requirement: $(ldd --version | head -1)"
-echo " Run with:  ./$EXE"
+echo " Run with:  ./$(basename "$EXE")"
 echo "============================================================"
 
 deactivate
