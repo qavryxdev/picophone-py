@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picophone-py"
+version = "0.1.0"
+description = "Modern multiplatform reimplementation of PicoPhone (UDP P2P softphone) with Opus + AEC + IPv6"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "user" }]
+
+dependencies = [
+    "PySide6>=6.6",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26",
+    "opuslib>=3.0.1",
+    "pyogg>=0.6.14a1; sys_platform == 'win32'",  # ships bundled opus.dll for ctypes.find_library
+    "cryptography>=42.0",
+    "zeroconf>=0.131",
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+aec  = ["webrtc-audio-processing>=0.2"]
+vad  = ["webrtcvad>=2.0.10"]
+dev  = ["pyinstaller>=6.3", "ruff", "pytest"]
+
+[project.scripts]
+picophone = "picophone.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["picophone*"]
+
+[tool.setuptools.package-data]
+picophone = ["ui/*.qss"]

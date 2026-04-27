@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+.pytest_cache/
+.ruff_cache/
+
+# bundled native runtime, fetched at install time
+libopus-0.dll
+opus.dll
+
+# user runtime
+*.toml.bak
+picophone.log*

@@ -1,0 +1,63 @@
+/* PicoPhone-Py dark skin (mirrors original blue/grey palette) */
+QWidget#root {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #4a5b8a, stop:1 #2f3d63);
+    border-radius: 12px;
+    border: 1px solid #1e2a4a;
+    color: #eaeaea;
+    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 11px;
+}
+QWidget#root[light="true"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #d8dde8, stop:1 #aab2c4);
+    color: #14223f;
+}
+QLabel#title { font-weight: 600; font-size: 12px; padding-left: 6px; }
+
+QToolButton {
+    background: #2a345a;
+    color: #cfd6ea;
+    border: 1px solid #1a2240;
+    border-radius: 4px;
+    padding: 4px 6px;
+    min-width: 36px;
+    font-weight: 600;
+}
+QToolButton:hover   { background: #38446e; }
+QToolButton:pressed { background: #1c2444; }
+QToolButton:checked { background: #c83737; color: #fff; }
+
+QComboBox {
+    background: #1c2240;
+    color: #d6deea;
+    border: 1px solid #1a2240;
+    border-radius: 3px;
+    padding: 2px 6px;
+}
+
+QSlider::groove:vertical {
+    background: #1a2240;
+    width: 6px;
+    border-radius: 3px;
+}
+QSlider::handle:vertical {
+    background: #c8d0e8;
+    height: 10px;
+    border-radius: 4px;
+    margin: 0 -4px;
+}
+
+QProgressBar {
+    background: #1a2240;
+    border: 1px solid #0e1430;
+    border-radius: 2px;
+    text-align: center;
+    color: #ffd070;
+    height: 8px;
+}
+QProgressBar::chunk { background: #ff6a3d; }
+
+QLabel#led            { background: #2a345a; border-radius: 6px; min-width: 12px; min-height: 12px; }
+QLabel#led[on="true"] { background: #4ad06a; }
+QLabel#status         { color: #ffe09a; padding: 2px 6px; }
