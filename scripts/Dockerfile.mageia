@@ -1,0 +1,47 @@
+# Build a Mageia-compatible single-file PicoPhone-Py binary inside Docker.
+#
+# From the project root, on Windows or Linux:
+#
+#   docker build -f scripts/Dockerfile.mageia -t picophone-mageia-build .
+#   docker run --rm -v "$PWD/dist:/out" picophone-mageia-build
+#
+# The container compiles with Mageia 9's glibc (2.36), producing an ELF that
+# runs on Mageia 9 and on any newer Linux with glibc >= 2.36.
+#
+# Result: dist/nuitka/PicoPhone-Py   (one file, ~45 MB)
+
+FROM mageia:9 AS builder
+
+RUN dnf -y install \
+        python3 python3-pip python3-devel \
+        gcc gcc-c++ make patchelf chrpath \
+        portaudio libopus-devel libffi-devel \
+        fontconfig dbus-libs libxcb1 libX11_6 \
+    && dnf clean all
+
+WORKDIR /src
+COPY . /src
+
+RUN python3 -m venv /opt/venv \
+ && /opt/venv/bin/pip install --upgrade pip wheel \
+ && /opt/venv/bin/pip install \
+        nuitka ordered-set zstandard \
+        PySide6 sounddevice numpy opuslib cryptography tomli-w
+
+RUN /opt/venv/bin/python -m nuitka \
+        --onefile \
+        --assume-yes-for-downloads \
+        --enable-plugin=pyside6 \
+        --include-data-files=picophone/ui/skin.qss=picophone/ui/skin.qss \
+        --include-data-files=assets/icons/picophone.ico=assets/icons/picophone.ico \
+        --include-package=picophone \
+        --include-package=cryptography \
+        --include-package=opuslib \
+        --include-package=numpy \
+        --linux-icon=assets/icons/picophone.ico \
+        --output-dir=dist/nuitka \
+        --output-filename=PicoPhone-Py \
+        picophone/__main__.py
+
+# Default command: copy the binary out to /out (host-mounted)
+CMD ["sh", "-c", "mkdir -p /out/nuitka && cp dist/nuitka/PicoPhone-Py /out/nuitka/ && echo \"Built: /out/nuitka/PicoPhone-Py\"" ]

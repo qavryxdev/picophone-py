@@ -120,13 +120,35 @@ automatically from the standard install location.
 First build downloads ~150 MB of MinGW64 toolchain into Nuitka's cache and
 takes 5–15 min; subsequent builds use ccache and finish in ~30 s.
 
-### Linux
+### Linux — single-file ELF (Debian/Ubuntu)
+
 ```bash
 PICOPHONE_INSTALL_SYSDEPS=1 scripts/build_linux.sh
 ```
-(Or pre-install `libportaudio2 libopus0 avahi-daemon` and drop the env var.)
-Produces `dist/PicoPhone-Py` (one-file ELF). `libopus.so.0` is loaded from the
-system at runtime so it stays small.
+
+Produces `dist/PicoPhone-Py` (one-file ELF) via PyInstaller. `libopus.so.0`
+is loaded from the system at runtime so the binary stays small.
+
+### Linux — single-file ELF (Mageia)
+
+Mageia uses different package names (RPM, `urpmi`/`dnf`) so it gets its
+own script that builds via Nuitka:
+
+```bash
+scripts/build_mageia.sh
+```
+
+Produces `dist/nuitka/PicoPhone-Py` (~45 MB, glibc-linked against the
+host's libc — Mageia 9 ships glibc 2.36, so the resulting binary also
+runs on any newer distro).
+
+**Cross-build from Windows (or any non-Mageia host)** via Docker:
+
+```bash
+docker build -f scripts/Dockerfile.mageia -t picophone-mageia-build .
+docker run --rm -v "$PWD/dist:/out" picophone-mageia-build
+# -> dist/nuitka/PicoPhone-Py  (works on Mageia 9+)
+```
 
 ## Status
 
