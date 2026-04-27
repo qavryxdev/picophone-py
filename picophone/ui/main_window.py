@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
         ring_path = Path(__file__).parent.parent.parent / "assets" / "ringin.wav"
         if ring_path.exists():
             self._ring.setSource(QUrl.fromLocalFile(str(ring_path)))
-            self._ring.setLoopCount(QSoundEffect.Infinite)
+            self._ring.setLoopCount(-2)            # QSoundEffect.Infinite, as int (Qt 6.11 strict)
             self._ring.setVolume(0.7)
 
         self._build_ui()
