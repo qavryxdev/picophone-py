@@ -152,72 +152,18 @@ class _WebrtcAec:
             pass
 
 
-class _DfnPostProcessor:
-    """DeepFilterNet3 neural noise + residual-echo + dereverb post-processor.
-
-    Cascaded after the linear FDAF stage:  raw mic -> FDAF (kills linear echo)
-    -> DFN (kills residual non-linear echo, background noise, room reverb).
-    Closely mirrors WebRTC AEC3's architecture (linear AEC + neural NLP).
-    """
-
-    def __init__(self, frame_samples: int, sample_rate_hz: int) -> None:
-        # Nuitka --windowed leaves sys.stderr = None, which breaks loguru
-        # (DFN's logger backend) on its very first .add() call.  Patch a
-        # dummy stream in *before* importing df.
-        import sys, io, types
-        if sys.stderr is None:
-            sys.stderr = io.StringIO()
-        if sys.stdout is None:
-            sys.stdout = io.StringIO()
-        # Older deepfilternet (0.5.6) imports `from torchaudio.backend.common
-        # import AudioMetaData` which torchaudio 2.1+ no longer exposes.
-        # Add just the missing submodule, do *not* replace torchaudio.backend
-        # itself (some torchaudio versions still expose other names there).
-        if "torchaudio.backend.common" not in sys.modules:
-            try:
-                import torchaudio.backend as _tab
-            except ImportError:
-                import torchaudio
-                _tab = types.ModuleType("torchaudio.backend")
-                sys.modules["torchaudio.backend"] = _tab
-                torchaudio.backend = _tab
-            _stub = types.ModuleType("torchaudio.backend.common")
-            class _AudioMetaData: pass
-            _stub.AudioMetaData = _AudioMetaData
-            sys.modules["torchaudio.backend.common"] = _stub
-            try:
-                _tab.common = _stub
-            except Exception:  # noqa: BLE001
-                pass
-
-        import torch
-        from df.enhance import init_df, enhance
-        self._torch = torch
-        self._enhance = enhance
-        self._model, self._state, _ = init_df()
-        if self._state.sr() != sample_rate_hz:
-            log.warning("DFN sample rate %d != engine %d; DFN expects 48 kHz",
-                        self._state.sr(), sample_rate_hz)
-        self._frame = frame_samples
-
-    def process(self, pcm_int16: np.ndarray) -> np.ndarray:
-        if pcm_int16.size == 0:
-            return pcm_int16
-        sig = pcm_int16.astype(np.float32) / 32768.0
-        with self._torch.no_grad():
-            out = self._enhance(self._model, self._state,
-                                self._torch.from_numpy(sig).unsqueeze(0))
-        cleaned = out.squeeze().cpu().numpy()
-        return (cleaned * 32768.0).clip(-32768, 32767).astype(np.int16)
-
-
 def make_post(frame_samples: int, sample_rate_hz: int, enable_dfn: bool):
-    """Return an optional post-processor with .process(int16) -> int16, or None."""
+    """Return an optional AI post-processor with .process(int16) -> int16, or None.
+
+    Implementation: DeepFilterNet3 inference via onnxruntime + libdf
+    (no PyTorch).  See picophone.audio.dfn_onnx for details.
+    """
     if not enable_dfn:
         return None
     try:
-        post = _DfnPostProcessor(frame_samples, sample_rate_hz)
-        log.info("AI post-processor: DeepFilterNet3 (CPU)")
+        from picophone.audio.dfn_onnx import DfnOnnxPostProcessor
+        post = DfnOnnxPostProcessor(frame_samples, sample_rate_hz)
+        log.info("AI post-processor: DeepFilterNet3 (ONNX runtime, CPU)")
         return post
     except Exception as e:  # noqa: BLE001
         log.warning("DeepFilterNet unavailable (%s); skipping AI post", e)

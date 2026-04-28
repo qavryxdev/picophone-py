@@ -1,1 +1,1 @@
-__version__ = "0.4.2"  # bundle df.deepfilternet3 explicitly (AI mode now actually loads)
+__version__ = "0.5.0"  # DFN3 via onnxruntime + libdf (drop torch, exe ~70 MB)

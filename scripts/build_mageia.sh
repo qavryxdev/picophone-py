@@ -78,41 +78,15 @@ rm -rf dist/nuitka
 JOBS=$(nproc 2>/dev/null || echo 4)
 echo "Using $JOBS parallel jobs"
 
-# Bundle DeepFilterNet (AI mode) if it's installed in this venv.
+# Bundle DFN3 AI runtime (ONNX, no torch) if libdf + onnxruntime are
+# importable and the model files are in assets/dfn3/.
 DFN_FLAGS=()
-if python -c "import df" >/dev/null 2>&1; then
-    echo "Bundling DeepFilterNet3 (AI mode) into the binary."
+if python -c "import libdf, onnxruntime" >/dev/null 2>&1 && [ -f assets/dfn3/enc.onnx ]; then
+    echo "Bundling DeepFilterNet3 (ONNX, no torch) into the binary."
     DFN_FLAGS=(
-        --include-package=df
-        # df.deepfilternetN is loaded via importlib.import_module() driven
-        # by the model name in config.ini -> static analysis misses it.
-        --include-module=df.deepfilternet3
         --include-package=libdf
-        --include-package=torch
-        --include-package=torchaudio
-        # Skip torch subtrees we never reach during inference.  They balloon the
-        # build to 2700+ C modules and one of them (torch.testing._internal.
-        # common_methods_invocations) is so large gcc -O3 OOMs / crashes.
-        --nofollow-import-to=torch.testing
-        --nofollow-import-to=torch.distributed
-        --nofollow-import-to=torch.fx
-        --nofollow-import-to=torch.jit
-        --nofollow-import-to=torch.onnx
-        --nofollow-import-to=torch.optim
-        --nofollow-import-to=torch.autograd.profiler
-        --nofollow-import-to=torch.profiler
-        --nofollow-import-to=torch._inductor
-        --nofollow-import-to=torch._dynamo
-        --nofollow-import-to=torch.utils.tensorboard
-        --nofollow-import-to=torch.utils.benchmark
-        --nofollow-import-to=torch.utils.bottleneck
-        --nofollow-import-to=torch.nn.qat
-        --nofollow-import-to=torch.nn.quantized
-        --nofollow-import-to=torch.nn.intrinsic
-        --nofollow-import-to=torch.ao
-        --nofollow-import-to=torch.quantization
-        --nofollow-import-to=sympy
-        --nofollow-import-to=networkx
+        --include-package=onnxruntime
+        --include-data-dir=assets/dfn3=assets/dfn3
     )
 fi
 
