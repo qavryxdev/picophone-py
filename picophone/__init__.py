@@ -1,1 +1,1 @@
-__version__ = "0.4.1"  # + system-tray minimize, Windows autostart
+__version__ = "0.4.2"  # bundle df.deepfilternet3 explicitly (AI mode now actually loads)

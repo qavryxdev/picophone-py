@@ -84,6 +84,9 @@ if python -c "import df" >/dev/null 2>&1; then
     echo "Bundling DeepFilterNet3 (AI mode) into the binary."
     DFN_FLAGS=(
         --include-package=df
+        # df.deepfilternetN is loaded via importlib.import_module() driven
+        # by the model name in config.ini -> static analysis misses it.
+        --include-module=df.deepfilternet3
         --include-package=libdf
         --include-package=torch
         --include-package=torchaudio

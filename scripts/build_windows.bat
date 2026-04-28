@@ -47,7 +47,10 @@ set DFN_FLAGS=
 "%PY312%" -c "import df" 2>nul
 if errorlevel 1 goto :no_dfn
 echo Bundling DeepFilterNet3 (AI mode) into the exe.
-set DFN_FLAGS=--include-package=df --include-package=libdf --include-package=torch --include-package=torchaudio --nofollow-import-to=torch.testing --nofollow-import-to=torch.distributed --nofollow-import-to=torch.fx --nofollow-import-to=torch.jit --nofollow-import-to=torch.onnx --nofollow-import-to=torch.optim --nofollow-import-to=torch.profiler --nofollow-import-to=torch._inductor --nofollow-import-to=torch._dynamo --nofollow-import-to=torch.utils.tensorboard --nofollow-import-to=torch.utils.benchmark --nofollow-import-to=torch.nn.qat --nofollow-import-to=torch.nn.quantized --nofollow-import-to=torch.nn.intrinsic --nofollow-import-to=torch.ao --nofollow-import-to=torch.quantization --nofollow-import-to=sympy --nofollow-import-to=networkx
+REM df.deepfilternetN is loaded via importlib.import_module() driven by
+REM the model name in config.ini, so Nuitka's static analysis misses it.
+REM Explicitly include every model variant so they're bundled.
+set DFN_FLAGS=--include-package=df --include-module=df.deepfilternet3 --include-package=libdf --include-package=torch --include-package=torchaudio --nofollow-import-to=torch.testing --nofollow-import-to=torch.distributed --nofollow-import-to=torch.fx --nofollow-import-to=torch.jit --nofollow-import-to=torch.onnx --nofollow-import-to=torch.optim --nofollow-import-to=torch.profiler --nofollow-import-to=torch._inductor --nofollow-import-to=torch._dynamo --nofollow-import-to=torch.utils.tensorboard --nofollow-import-to=torch.utils.benchmark --nofollow-import-to=torch.nn.qat --nofollow-import-to=torch.nn.quantized --nofollow-import-to=torch.nn.intrinsic --nofollow-import-to=torch.ao --nofollow-import-to=torch.quantization --nofollow-import-to=sympy --nofollow-import-to=networkx
 :no_dfn
 
 REM ------------------------------------------------------------------
