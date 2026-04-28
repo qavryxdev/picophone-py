@@ -1,1 +1,1 @@
-__version__ = "0.5.0"  # DFN3 via onnxruntime + libdf (drop torch, exe ~70 MB)
+__version__ = "0.5.1"  # silence handling: pre-AEC drop + PLC bound (no DFN hiss, no PLC drift)
