@@ -1,6 +1,6 @@
 """Toggle 'start with Windows' via the per-user Run registry key.
 
-Only meaningful for the frozen Nuitka exe — autostart from source mode
+Only meaningful for the frozen exe — autostart from source mode
 (running `python -m picophone`) is unsupported.
 """
 from __future__ import annotations

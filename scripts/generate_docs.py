@@ -202,30 +202,26 @@ h(2, "H2", "3.1 Windows")
 p("Body", "Run from the project root:")
 code_block("scripts\\build_windows.bat")
 p("Body",
-  "Output: dist\\nuitka\\PicoPhone-Py.exe. Requires Python 3.12 + Nuitka with "
-  "auto-MinGW64; DeepFilterNet bundling triggers automatically when the "
-  "deepfilternet pip package is installed in that interpreter.")
+  "Output: dist\\PicoPhone-Py.exe. Requires Python 3.11 or 3.12 with "
+  "PyInstaller; DeepFilterNet bundling triggers automatically when "
+  "deepfilterlib + onnxruntime are importable and assets/dfn3/*.onnx are "
+  "present.")
 h(2, "H2", "3.2 Linux (Mageia 9 / Fedora 39+ / RHEL 9+)")
 p("Body",
   "On a real Mageia desktop:")
 code_block("scripts/build_mageia.sh")
 p("Body",
   "On any other host, use the WSL2-Mageia pipeline (bundled "
-  "instructions in README.md). Output: dist/nuitka/PicoPhone-Py — single ELF, "
+  "instructions in README.md). Output: dist/PicoPhone-Py — single ELF, "
   "glibc 2.36 link target, runs on Mageia 9, Mageia 10/cauldron, "
   "Fedora 39+, RHEL 9+, Ubuntu 24.04+.")
-h(2, "H2", "3.3 Slim torch list")
+h(2, "H2", "3.3 PyInstaller flags")
 p("Body",
-  "The DeepFilterNet bundle drags in PyTorch CPU. Without filtering, Nuitka "
-  "tries to compile 2 700+ C modules (including 50 000-line "
-  "torch.testing._internal.common_methods_invocations.c) and gcc OOMs.")
-p("Body",
-  "Both build scripts therefore pass --nofollow-import-to for subtrees we "
-  "never reach during inference: torch.testing, torch.distributed, "
-  "torch.fx/jit/onnx/optim/profiler, torch._inductor, torch._dynamo, "
-  "torch.utils.{tensorboard,benchmark}, torch.nn.{qat,quantized,intrinsic}, "
-  "torch.ao, torch.quantization, sympy, networkx. Module count drops to ~600, "
-  "build wallclock to ~15 min on 24 cores.")
+  "Both scripts use --onefile, --noconsole, --noupx and --collect-all for "
+  "libdf + onnxruntime. UPX is disabled by default because Avast and several "
+  "other AV vendors flag UPX-packed binaries more aggressively than the "
+  "plain bootloader. Enable UPX manually if size matters more than AV "
+  "reputation.")
 
 # 4. Configuration
 h(1, "H1", "4. Configuration")
@@ -401,7 +397,7 @@ bullets([
     "DeepFilterNet3 — Hendrik Schroeter et al. (Rikorose/DeepFilterNet)",
     "Qt 6 / PySide6 — The Qt Company",
     "PortAudio (sounddevice) — Ross Bencina, Phil Burk",
-    "Nuitka — Kay Hayen",
+    "PyInstaller — David Cortesi et al.",
 ])
 
 # Save

@@ -1,1 +1,1 @@
-__version__ = "0.5.1"  # silence handling: pre-AEC drop + PLC bound (no DFN hiss, no PLC drift)
+__version__ = "0.5.2"  # build switched to PyInstaller + UPX (Nuitka removed)

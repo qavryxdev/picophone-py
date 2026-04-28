@@ -44,9 +44,10 @@ NORM_ALPHA   = 0.99   # df.utils.get_norm_alpha(False) for SR=48000
 def _models_dir() -> Path:
     """Locate the bundled assets/dfn3 directory.
 
-    Works when running from source (project root) and in Nuitka onefile
-    (sys._MEIPASS-style, but Nuitka uses __file__ that points inside the
-    extracted temp dir)."""
+    Works when running from source (project root) and inside a PyInstaller
+    onefile bundle (sys._MEIPASS holds the extracted temp dir)."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "assets" / "dfn3"  # type: ignore[attr-defined]
     here = Path(__file__).resolve().parent
     for cand in (
         here.parent.parent / "assets" / "dfn3",   # project root layout

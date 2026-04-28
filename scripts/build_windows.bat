@@ -1,18 +1,15 @@
 @echo off
-REM Build PicoPhone-Py as a true single-file Windows executable using Nuitka.
+REM Build PicoPhone-Py as a single-file Windows executable using PyInstaller.
 REM
-REM Nuitka compiles Python to C, then builds a native .exe with all
-REM Python modules and Qt DLLs embedded. The result is one .exe — no
-REM sibling DLLs, no PyInstaller-style bootloader (which Avast flags as
-REM Win64:Malware-gen). On startup the launcher unpacks bundled DLLs to
-REM a private %TEMP%\onefile_* directory and loads them; that's a
-REM Nuitka implementation detail, not user-visible.
+REM PyInstaller bundles the Python interpreter, compiled .pyc modules and
+REM native extensions into a single .exe with a small bootloader.  Build
+REM completes in ~30 seconds (vs ~30 minutes for a full Nuitka C-transpile).
 REM
-REM Toolchain requirement: Python 3.12 (Nuitka refuses to use the
-REM auto-downloaded MinGW64 on Python 3.13). Install the official
-REM python-3.12.x-amd64.exe; this script picks it up automatically.
+REM Known issue: Avast (and some other AV vendors) flag the PyInstaller
+REM bootloader as IDP.Generic.  Whitelist the exe locally or sign it with a
+REM code-signing certificate before distribution.
 REM
-REM Output: dist\nuitka\PicoPhone-Py.exe   (~45 MB single file)
+REM Output: dist\PicoPhone-Py.exe   (~110 MB single file, no UPX)
 REM
 REM Usage: scripts\build_windows.bat
 setlocal enabledelayedexpansion
@@ -20,44 +17,50 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0\.."
 
 REM ------------------------------------------------------------------
-echo === Step 1: locate Python 3.12 =====================================
-set PY312=
+echo === Step 1: locate Python =========================================
+set PY=
 for %%P in (
     "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
     "C:\Program Files\Python312\python.exe"
+    "C:\Program Files\Python311\python.exe"
     "C:\Python312\python.exe"
 ) do (
-    if exist %%P set PY312=%%~P
+    if exist %%P set PY=%%~P
 )
-if "%PY312%"=="" (
-    echo Python 3.12 not found.  Install python-3.12.x-amd64.exe from python.org
-    echo and re-run.  Nuitka requires Python 3.12 for auto-MinGW64 builds.
+if "%PY%"=="" (
+    echo Python 3.11 or 3.12 not found.  Install python-3.12.x-amd64.exe from
+    echo python.org and re-run.
     goto :error
 )
-echo Using: %PY312%
+echo Using: %PY%
 
 REM ------------------------------------------------------------------
-echo === Step 2: install build tools + runtime deps in Py 3.12 ==========
-"%PY312%" -m pip install --upgrade pip --quiet
-"%PY312%" -m pip install --quiet --no-warn-script-location ^
-    nuitka ordered-set zstandard ^
+echo === Step 2: install PyInstaller + runtime deps ====================
+"%PY%" -m pip install --upgrade pip --quiet
+"%PY%" -m pip install --quiet --no-warn-script-location ^
+    pyinstaller ^
     PySide6 sounddevice numpy opuslib pyogg cryptography zeroconf tomli-w ^
     onnxruntime || goto :error
-REM AI mode (DeepFilterNet3) runs via onnxruntime + libdf (Rust DSP), no
-REM PyTorch.  libdf is provided by the deepfilterlib pip package but we
-REM only need its compiled extension, not the Python `df` package.
-"%PY312%" -m pip install --quiet --no-warn-script-location deepfilterlib 2>nul
+REM AI mode (DeepFilterNet3) runs via onnxruntime + libdf, no PyTorch.
+"%PY%" -m pip install --quiet --no-warn-script-location deepfilterlib 2>nul
+
 set DFN_FLAGS=
-"%PY312%" -c "import libdf, onnxruntime" 2>nul
+"%PY%" -c "import libdf, onnxruntime" 2>nul
 if errorlevel 1 goto :no_dfn
 if not exist assets\dfn3\enc.onnx goto :no_dfn
 echo Bundling DeepFilterNet3 (ONNX, no torch) into the exe.
-set DFN_FLAGS=--include-package=libdf --include-package=onnxruntime --include-data-dir=assets\dfn3=assets\dfn3
+REM We collect onnxruntime *binaries+data* but NOT every submodule —
+REM `--collect-all` recurses into onnxruntime.transformers, .training,
+REM .tools, .quantization which we never load and which add ~1 minute
+REM of hidden-import analysis to the build.  We import only the top-level
+REM ort + the C extension at runtime.
+set DFN_FLAGS=--collect-all libdf --collect-binaries onnxruntime --collect-data onnxruntime --add-data "assets\dfn3;assets\dfn3"
 :no_dfn
 
 REM ------------------------------------------------------------------
-echo === Step 3: locate bundled opus.dll (from pyogg) ===================
-"%PY312%" -c "import os, pyogg; open('build_opus_path.tmp','w').write(os.path.join(os.path.dirname(pyogg.__file__),'opus.dll'))" || goto :error
+echo === Step 3: locate bundled opus.dll (from pyogg) ==================
+"%PY%" -c "import os, pyogg; open('build_opus_path.tmp','w').write(os.path.join(os.path.dirname(pyogg.__file__),'opus.dll'))" || goto :error
 set /p OPUS_DLL=<build_opus_path.tmp
 del build_opus_path.tmp
 if not exist "%OPUS_DLL%" (
@@ -66,50 +69,51 @@ if not exist "%OPUS_DLL%" (
 )
 
 REM ------------------------------------------------------------------
-echo === Step 4: Nuitka onefile build (this takes 5-15 min on first run) ==
-REM Don't wipe dist\nuitka wholesale: a Linux ELF (PicoPhone-Py without .exe)
-REM may live alongside us from a build_mageia.sh / WSL build.
-if exist dist\nuitka\PicoPhone-Py.exe        del /q dist\nuitka\PicoPhone-Py.exe
-if exist dist\nuitka\__main__.build          rmdir /s /q dist\nuitka\__main__.build
-if exist dist\nuitka\__main__.dist           rmdir /s /q dist\nuitka\__main__.dist
-if exist dist\nuitka\__main__.onefile-build  rmdir /s /q dist\nuitka\__main__.onefile-build
-if not exist dist\nuitka                     mkdir dist\nuitka
-
-REM Use all CPU cores for compilation.
-REM NUMBER_OF_PROCESSORS is a built-in Windows env variable (logical CPU count).
-if "%NUMBER_OF_PROCESSORS%"=="" set NUMBER_OF_PROCESSORS=4
-echo Using %NUMBER_OF_PROCESSORS% parallel jobs
-
-"%PY312%" -m nuitka ^
-    --onefile ^
-    --jobs=%NUMBER_OF_PROCESSORS% ^
-    --mingw64 ^
-    --assume-yes-for-downloads ^
-    --windows-console-mode=disable ^
-    --enable-plugin=pyside6 ^
-    --include-data-files="picophone\ui\skin.qss=picophone\ui\skin.qss" ^
-    --include-data-files="%OPUS_DLL%=opus.dll" ^
-    --include-data-files="assets\icons\picophone.ico=assets\icons\picophone.ico" ^
-    --include-data-files="assets\ringin.wav=assets\ringin.wav" ^
-    --include-package=picophone ^
-    --include-module=picophone.autostart ^
-    --include-package=cryptography ^
-    --include-package=opuslib ^
-    --include-package=numpy ^
-    --windows-icon-from-ico="assets\icons\picophone.ico" ^
-    --output-dir=dist\nuitka ^
-    --output-filename=PicoPhone-Py.exe ^
-    %DFN_FLAGS% ^
-    picophone\__main__.py || goto :error
+echo === Step 4: parallel bytecode pre-compile (all CPU cores) =========
+REM PyInstaller's bundling itself is mostly serial I/O.  The one CPU-bound
+REM step it does is bytecode compilation, which we warm here with all
+REM cores so PyInstaller hits cache hits during the freeze step.
+"%PY%" -m compileall -j 0 -q picophone
 
 REM ------------------------------------------------------------------
-if not exist "dist\nuitka\PicoPhone-Py.exe" goto :error
+echo === Step 5: PyInstaller onefile build =============================
+if exist dist\PicoPhone-Py.exe del /q dist\PicoPhone-Py.exe
+if exist build                  rmdir /s /q build
+if exist PicoPhone-Py.spec      del /q PicoPhone-Py.spec
+
+REM Optional UPX compression — keep tools/upx-*/upx.exe in the repo to enable.
+set UPX_FLAGS=--noupx
+for /d %%U in ("tools\upx-*-win64") do (
+    if exist "%%~U\upx.exe" set UPX_FLAGS=--upx-dir="%%~U"
+)
+echo UPX: %UPX_FLAGS%
+
+"%PY%" -m PyInstaller ^
+    --onefile ^
+    --noconsole ^
+    %UPX_FLAGS% ^
+    --name PicoPhone-Py ^
+    --icon "assets\icons\picophone.ico" ^
+    --add-data "picophone\ui\skin.qss;picophone\ui" ^
+    --add-data "%OPUS_DLL%;." ^
+    --add-data "assets\icons\picophone.ico;assets\icons" ^
+    --add-data "assets\ringin.wav;assets" ^
+    --hidden-import picophone.autostart ^
+    --hidden-import picophone.audio.dfn_onnx ^
+    --collect-submodules picophone ^
+    %DFN_FLAGS% ^
+    --distpath dist ^
+    --workpath build ^
+    picophone\__main__.py || goto :error
+
+if not exist "dist\PicoPhone-Py.exe" goto :error
 
 echo.
 echo ============================================================
-echo  Built true single-file portable exe:
-echo    dist\nuitka\PicoPhone-Py.exe
-echo  Double-click to run.  No sibling DLLs needed.
+echo  Built single-file Windows exe:
+echo    dist\PicoPhone-Py.exe
+echo  Note: Avast may quarantine the bootloader as IDP.Generic;
+echo  whitelist the file or code-sign it before distribution.
 echo ============================================================
 exit /b 0
 

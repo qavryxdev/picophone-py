@@ -7,8 +7,8 @@ Each instance:
   - expires peers that haven't re-announced within PEER_TTL s
 
 This replaces the zeroconf-based mDNS discovery so that the build pipeline
-can produce a single-file Nuitka exe without Cython ABI mismatches that
-zeroconf's compiled extensions cause inside Nuitka's onefile bootstrap.
+can produce a single-file PyInstaller exe without Cython ABI mismatches
+that zeroconf's compiled extensions cause inside the onefile bootstrap.
 
 The protocol is intentionally tiny: one JSON datagram, no DNS encoding,
 no Bonjour/Avahi compatibility — we only need to find other PicoPhone-Py

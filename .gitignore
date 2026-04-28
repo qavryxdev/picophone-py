@@ -5,8 +5,8 @@ __pycache__/
 .Python
 build/
 dist/
-nuitka-build/
 *.spec
+tools/upx-*/
 *.egg-info/
 .eggs/
 .venv/

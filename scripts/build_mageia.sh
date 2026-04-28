@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Build a true single-file PicoPhone-Py executable for Mageia Linux.
+# Build a single-file PicoPhone-Py executable for Mageia Linux via PyInstaller.
 #
 # Works on Mageia 9, Mageia 10/cauldron, and binary-compatible distros
 # (Mandriva descendants, openMandriva).  Produces an ELF that's linked
 # against the system glibc; for Mageia 9 that's glibc 2.36, so the exe
 # also runs on any newer glibc (Mageia 10+, Fedora 39+, RHEL 9+).
 #
-# Run on a Mageia machine, in a Mageia VM, or inside a Mageia container:
-#   docker run --rm -v $PWD:/src -w /src mageia:9 scripts/build_mageia.sh
+# Run on a Mageia machine, in a Mageia VM, or under WSL.
 #
-# Output: dist/nuitka/PicoPhone-Py   (one file, ~45 MB)
+# Output: dist/PicoPhone-Py   (~140 MB single file, no UPX)
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,7 +24,7 @@ if [[ "$SRC" == /mnt/c/* ]]; then
     mkdir -p "$WORK"
     ( cd "$SRC" && tar --exclude=.git --exclude=dist --exclude=build \
                        --exclude=.venv-build --exclude=__pycache__ \
-                       --exclude=nuitka-build -cf - . ) | ( cd "$WORK" && tar -xf - )
+                       -cf - . ) | ( cd "$WORK" && tar -xf - )
     cd "$WORK"
 else
     cd "$SRC"
@@ -69,64 +68,67 @@ python -m pip install --upgrade pip wheel >/dev/null
 
 echo "=== installing Python deps =============================================="
 pip install --quiet \
-    nuitka ordered-set zstandard \
-    PySide6 sounddevice numpy opuslib cryptography tomli-w
+    pyinstaller \
+    PySide6 sounddevice numpy opuslib cryptography tomli-w onnxruntime
+pip install --quiet deepfilterlib 2>/dev/null || true
 
-# ---------- 3. Nuitka onefile build ----------------------------------------
-echo "=== Nuitka onefile build (5-15 min on first run) ========================"
-rm -rf dist/nuitka
-JOBS=$(nproc 2>/dev/null || echo 4)
-echo "Using $JOBS parallel jobs"
+# ---------- 3. PyInstaller onefile build -----------------------------------
+echo "=== PyInstaller onefile build ==========================================="
+rm -rf dist build PicoPhone-Py.spec
 
 # Bundle DFN3 AI runtime (ONNX, no torch) if libdf + onnxruntime are
 # importable and the model files are in assets/dfn3/.
 DFN_FLAGS=()
 if python -c "import libdf, onnxruntime" >/dev/null 2>&1 && [ -f assets/dfn3/enc.onnx ]; then
     echo "Bundling DeepFilterNet3 (ONNX, no torch) into the binary."
+    # Collect ORT binaries+data only, not every submodule — see Windows
+    # build comment for why (transformers/training/tools/quantization
+    # add ~1 minute of analysis we never use at runtime).
     DFN_FLAGS=(
-        --include-package=libdf
-        --include-package=onnxruntime
-        --include-data-dir=assets/dfn3=assets/dfn3
+        --collect-all libdf
+        --collect-binaries onnxruntime
+        --collect-data onnxruntime
+        --add-data "assets/dfn3:assets/dfn3"
     )
 fi
 
-# Don't pipe Nuitka stdout through `tee | tail`: when Nuitka exits non-zero
-# the SIGPIPE from `tail` swallows the real error message.  Run it raw.
-python -m nuitka \
+# Parallel bytecode pre-compile so PyInstaller's serial freeze step gets
+# cache hits.  -j 0 = all available cores.
+python -m compileall -j 0 -q picophone
+
+python -m PyInstaller \
     --onefile \
-    --jobs="$JOBS" \
-    --assume-yes-for-downloads \
+    --noconsole \
+    --noupx \
+    --name PicoPhone-Py \
+    --icon assets/icons/picophone.ico \
+    --add-data "picophone/ui/skin.qss:picophone/ui" \
+    --add-data "assets/icons/picophone.ico:assets/icons" \
+    --add-data "assets/ringin.wav:assets" \
+    --hidden-import picophone.autostart \
+    --hidden-import picophone.audio.dfn_onnx \
+    --collect-submodules picophone \
     "${DFN_FLAGS[@]}" \
-    --enable-plugin=pyside6 \
-    --include-data-files=picophone/ui/skin.qss=picophone/ui/skin.qss \
-    --include-data-files=assets/icons/picophone.ico=assets/icons/picophone.ico \
-    --include-data-files=assets/ringin.wav=assets/ringin.wav \
-    --include-package=picophone \
-    --include-module=picophone.autostart \
-    --include-package=cryptography \
-    --include-package=opuslib \
-    --include-package=numpy \
-    --linux-icon=assets/icons/picophone.ico \
-    --output-dir=dist/nuitka \
-    --output-filename=PicoPhone-Py \
+    --distpath dist \
+    --workpath build \
     picophone/__main__.py
 
 # ---------- 4. report ------------------------------------------------------
-EXE="dist/nuitka/PicoPhone-Py"
+EXE="dist/PicoPhone-Py"
 test -x "$EXE" || { echo "ERROR: build did not produce $EXE"; exit 1; }
 size_mb=$(du -m "$EXE" | cut -f1)
 
 # If we built in $HOME/build, copy the artifact back to the source tree so the
 # user finds it where they expect.
 if [[ "$SRC" != "$(pwd)" ]]; then
-    mkdir -p "$SRC/dist/nuitka"
-    cp -v "$EXE" "$SRC/dist/nuitka/PicoPhone-Py"
-    EXE="$SRC/dist/nuitka/PicoPhone-Py"
+    mkdir -p "$SRC/dist"
+    cp -v "$EXE" "$SRC/dist/PicoPhone-Py"
+    EXE="$SRC/dist/PicoPhone-Py"
 fi
 
 echo
 echo "============================================================"
-echo " Built true single-file Mageia binary:"
+echo " Built single-file Mageia binary:"
 echo "   $EXE   (${size_mb} MB)"
 echo " glibc requirement: $(ldd --version | head -1)"
 echo " Run with:  ./$(basename "$EXE")"

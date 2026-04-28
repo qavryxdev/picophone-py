@@ -95,7 +95,7 @@ python scripts/smoke_gui.py             # headless Qt launch (offscreen)
 
 ## Build single-file binary
 
-### Windows — true single-file binary (~45 MB)
+### Windows — single-file binary (~110 MB)
 
 ```cmd
 scripts\build_windows.bat
@@ -104,21 +104,17 @@ scripts\build_windows.bat
 Produces:
 
 ```
-dist\nuitka\PicoPhone-Py.exe       ← single file, ~45 MB, double-click
+dist\PicoPhone-Py.exe              ← single file, double-click
 ```
 
-Built with **Nuitka** (compiles Python → C → native exe via auto-downloaded
-MinGW64). The `.exe` is one file: no sibling DLLs, no `.bat` launcher.
-Nuitka's bootloader is not flagged by Avast / AVG / Defender the way
-PyInstaller's is.
+Built with **PyInstaller** (`--onefile --noconsole --noupx`). Build wallclock
+is ~30 s after the first run. **Known caveat:** Avast and a few other AV
+vendors flag the PyInstaller bootloader as IDP.Generic — whitelist the file
+locally or sign it with a code-signing certificate before distribution.
 
-**Toolchain requirement:** Python 3.12 must be installed
-(`python-3.12.x-amd64.exe` from python.org — Nuitka refuses to use the
-auto-downloaded MinGW64 on Python 3.13). The build script picks it up
-automatically from the standard install location.
-
-First build downloads ~150 MB of MinGW64 toolchain into Nuitka's cache and
-takes 5–15 min; subsequent builds use ccache and finish in ~30 s.
+**Toolchain requirement:** Python 3.11 or 3.12 (3.13 wheels for some deps
+are still patchy). The build script picks the highest available 3.x from
+the standard install locations.
 
 ### Linux — single-file ELF (Debian/Ubuntu)
 
@@ -132,23 +128,15 @@ is loaded from the system at runtime so the binary stays small.
 ### Linux — single-file ELF (Mageia)
 
 Mageia uses different package names (RPM, `urpmi`/`dnf`) so it gets its
-own script that builds via Nuitka:
+own script:
 
 ```bash
 scripts/build_mageia.sh
 ```
 
-Produces `dist/nuitka/PicoPhone-Py` (~45 MB, glibc-linked against the
-host's libc — Mageia 9 ships glibc 2.36, so the resulting binary also
-runs on any newer distro).
-
-**Cross-build from Windows (or any non-Mageia host)** via Docker:
-
-```bash
-docker build -f scripts/Dockerfile.mageia -t picophone-mageia-build .
-docker run --rm -v "$PWD/dist:/out" picophone-mageia-build
-# -> dist/nuitka/PicoPhone-Py  (works on Mageia 9+)
-```
+Produces `dist/PicoPhone-Py` (glibc-linked against the host's libc — Mageia
+9 ships glibc 2.36, so the resulting binary also runs on any newer distro).
+Also builds via PyInstaller.
 
 ## Status
 
