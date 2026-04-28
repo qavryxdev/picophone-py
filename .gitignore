@@ -26,3 +26,7 @@ opus.dll
 *.toml.bak
 picophone.log*
 picophone-smoke.toml
+
+# local-only history generator scripts
+generuj_historii.*
+git_historie.*
