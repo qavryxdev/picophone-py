@@ -79,6 +79,7 @@ class AudioEngine:
         self._aec: Aec = NullAec()
         self._post = None             # neural post-processor (DFN), exclusive with AEC
         self._jitter: deque[bytes] = deque(maxlen=64)
+        self._jitter_misses = 0          # consecutive empty popleft attempts
         self._render_q: deque[np.ndarray] = deque(maxlen=8)   # ~160ms at 20ms frames
         self._lock = threading.Lock()
         self._silent_render = np.zeros(self._frame_samples, dtype=np.int16)
@@ -144,6 +145,15 @@ class AudioEngine:
         if status:
             log.debug("capture status: %s", status)
         pcm = indata[:, 0].copy()
+        # Pre-AEC silence check: if the raw mic frame is below VAD threshold,
+        # skip the post-processor entirely.  DFN3 has a tendency to
+        # hallucinate band-limited noise when fed near-silence, and that
+        # noise can clear the post-processed VAD threshold and end up on
+        # the wire.  FDAF doesn't hallucinate but skipping it on silence
+        # saves CPU.
+        if self.muted or self._below_threshold(pcm):
+            self.tx_rms = 0.0
+            return
         with self._lock:
             render = self._render_q.popleft() if self._render_q else self._silent_render
         # Either FDAF (classic) or DFN (AI) — never both.
@@ -155,7 +165,9 @@ class AudioEngine:
             scaled = pcm.astype(np.float32) * self.in_gain
             pcm = np.clip(scaled, -32768, 32767).astype(np.int16)
         self.tx_rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)) + 1e-9) / 32768.0
-        if self.muted or self._below_threshold(pcm):
+        # Recheck threshold after AEC: linear AEC may have removed echo
+        # bringing residual below floor; skip those too.
+        if self._below_threshold(pcm):
             return
         try:
             payload = self._enc.encode(pcm.tobytes(), self._frame_samples)
@@ -169,8 +181,22 @@ class AudioEngine:
         with self._lock:
             payload = self._jitter.popleft() if self._jitter else None
         if payload is None:
-            pcm = self._dec.decode(b"", self._frame_samples, decode_fec=False) if self._dec else b"\x00" * frames * 2
+            self._jitter_misses += 1
+            # Opus PLC is intended to bridge SHORT (1-3 frame) packet losses.
+            # Once the peer goes silent for longer (their VAD dropped frames,
+            # they're not speaking) PLC drifts and produces audible noise on
+            # our speaker.  After 3 consecutive misses, output real zeros
+            # instead of letting PLC hallucinate.
+            if self._jitter_misses > 3 or self._dec is None:
+                arr = np.zeros(frames, dtype=np.int16)
+                outdata[:, 0] = arr
+                self.rx_rms = 0.0
+                with self._lock:
+                    self._render_q.append(arr.copy())
+                return
+            pcm = self._dec.decode(b"", self._frame_samples, decode_fec=False)
         else:
+            self._jitter_misses = 0
             pcm = self._dec.decode(payload, self._frame_samples, decode_fec=False)
         arr = np.frombuffer(pcm, dtype=np.int16)
         if arr.size < frames:
