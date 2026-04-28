@@ -21,8 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist" / "PicoPhone-Py"
 OUT  = ROOT / "dist" / "PicoPhone-Py-portable.exe"
 
-DEFAULT_SFX = Path("%USERPROFILE%/bin/7z/installer-content/7z.sfx")
-DEFAULT_7ZR = Path("%USERPROFILE%/bin/7z/7zr.exe")
+_BIN = Path(os.environ.get("PICOPHONE_7Z_DIR", str(Path.home() / "bin" / "7z")))
+DEFAULT_SFX = _BIN / "installer-content" / "7z.sfx"
+DEFAULT_7ZR = _BIN / "7zr.exe"
 
 # .sfx config — controls extraction behaviour
 CONFIG = (
