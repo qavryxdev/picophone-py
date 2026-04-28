@@ -78,10 +78,48 @@ rm -rf dist/nuitka
 JOBS=$(nproc 2>/dev/null || echo 4)
 echo "Using $JOBS parallel jobs"
 
+# Bundle DeepFilterNet (AI mode) if it's installed in this venv.
+DFN_FLAGS=()
+if python -c "import df" >/dev/null 2>&1; then
+    echo "Bundling DeepFilterNet3 (AI mode) into the binary."
+    DFN_FLAGS=(
+        --include-package=df
+        --include-package=libdf
+        --include-package=torch
+        --include-package=torchaudio
+        # Skip torch subtrees we never reach during inference.  They balloon the
+        # build to 2700+ C modules and one of them (torch.testing._internal.
+        # common_methods_invocations) is so large gcc -O3 OOMs / crashes.
+        --nofollow-import-to=torch.testing
+        --nofollow-import-to=torch.distributed
+        --nofollow-import-to=torch.fx
+        --nofollow-import-to=torch.jit
+        --nofollow-import-to=torch.onnx
+        --nofollow-import-to=torch.optim
+        --nofollow-import-to=torch.autograd.profiler
+        --nofollow-import-to=torch.profiler
+        --nofollow-import-to=torch._inductor
+        --nofollow-import-to=torch._dynamo
+        --nofollow-import-to=torch.utils.tensorboard
+        --nofollow-import-to=torch.utils.benchmark
+        --nofollow-import-to=torch.utils.bottleneck
+        --nofollow-import-to=torch.nn.qat
+        --nofollow-import-to=torch.nn.quantized
+        --nofollow-import-to=torch.nn.intrinsic
+        --nofollow-import-to=torch.ao
+        --nofollow-import-to=torch.quantization
+        --nofollow-import-to=sympy
+        --nofollow-import-to=networkx
+    )
+fi
+
+# Don't pipe Nuitka stdout through `tee | tail`: when Nuitka exits non-zero
+# the SIGPIPE from `tail` swallows the real error message.  Run it raw.
 python -m nuitka \
     --onefile \
     --jobs="$JOBS" \
     --assume-yes-for-downloads \
+    "${DFN_FLAGS[@]}" \
     --enable-plugin=pyside6 \
     --include-data-files=picophone/ui/skin.qss=picophone/ui/skin.qss \
     --include-data-files=assets/icons/picophone.ico=assets/icons/picophone.ico \

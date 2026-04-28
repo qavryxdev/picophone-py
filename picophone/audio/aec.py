@@ -169,16 +169,26 @@ class _DfnPostProcessor:
             sys.stderr = io.StringIO()
         if sys.stdout is None:
             sys.stdout = io.StringIO()
-        # Older deepfilternet (0.5.6) imports torchaudio.backend.common which
-        # was removed in torchaudio 2.1+.  Stub it before df.enhance loads.
+        # Older deepfilternet (0.5.6) imports `from torchaudio.backend.common
+        # import AudioMetaData` which torchaudio 2.1+ no longer exposes.
+        # Add just the missing submodule, do *not* replace torchaudio.backend
+        # itself (some torchaudio versions still expose other names there).
         if "torchaudio.backend.common" not in sys.modules:
-            ta_be = types.ModuleType("torchaudio.backend")
+            try:
+                import torchaudio.backend as _tab
+            except ImportError:
+                import torchaudio
+                _tab = types.ModuleType("torchaudio.backend")
+                sys.modules["torchaudio.backend"] = _tab
+                torchaudio.backend = _tab
+            _stub = types.ModuleType("torchaudio.backend.common")
             class _AudioMetaData: pass
-            m = types.ModuleType("torchaudio.backend.common")
-            m.AudioMetaData = _AudioMetaData
-            ta_be.common = m
-            sys.modules["torchaudio.backend"]        = ta_be
-            sys.modules["torchaudio.backend.common"] = m
+            _stub.AudioMetaData = _AudioMetaData
+            sys.modules["torchaudio.backend.common"] = _stub
+            try:
+                _tab.common = _stub
+            except Exception:  # noqa: BLE001
+                pass
 
         import torch
         from df.enhance import init_df, enhance
