@@ -26,7 +26,9 @@ QToolButton {
 }
 QToolButton:hover   { background: #38446e; }
 QToolButton:pressed { background: #1c2444; }
-QToolButton:checked { background: #c83737; color: #fff; }
+QToolButton:checked         { background: #c83737; color: #fff; }
+QToolButton#boost           { font-size: 9px; padding: 0px 2px; min-width: 24px; min-height: 14px; font-weight: 700; }
+QToolButton#boost:checked   { background: #d8a13b; color: #1c2240; }   /* amber when +10 dB active */
 
 QComboBox {
     background: #1c2240;

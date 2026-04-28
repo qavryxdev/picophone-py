@@ -69,6 +69,10 @@ class AudioEngine:
         # Going above 1.0 saturates and breaks the AEC's linearity assumption.
         self.in_gain  = max(0.0, min(1.0, cfg.rec_level   / 1000.0))
         self.out_gain = max(0.0, min(1.0, cfg.play_volume / 1000.0))
+        # Optional +10 dB boost toggles (matching original PicoPhone's
+        # "10 dB mic gain" / "10 dB spk gain" buttons).
+        self.in_boost_db  = float(cfg.in_gain_db)    # 0 or 10
+        self.out_boost_db = float(cfg.out_gain_db)
         self.tx_rms = 0.0
         self.rx_rms = 0.0
         self._frame_samples = cfg.sample_rate_hz * cfg.frame_ms // 1000
@@ -161,8 +165,9 @@ class AudioEngine:
             pcm = self._post.process(pcm)
         else:
             pcm = self._aec.process(pcm, render)
-        if self.in_gain != 1.0:
-            scaled = pcm.astype(np.float32) * self.in_gain
+        in_factor = self.in_gain * (10.0 ** (self.in_boost_db / 20.0))
+        if abs(in_factor - 1.0) > 1e-3:
+            scaled = pcm.astype(np.float32) * in_factor
             pcm = np.clip(scaled, -32768, 32767).astype(np.int16)
         self.tx_rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)) + 1e-9) / 32768.0
         # Recheck threshold after AEC: linear AEC may have removed echo
@@ -205,9 +210,11 @@ class AudioEngine:
             arr = arr[:frames]
         if self.spk_muted:
             arr = np.zeros(frames, dtype=np.int16)
-        elif self.out_gain != 1.0:
-            scaled = arr.astype(np.float32) * self.out_gain
-            arr = np.clip(scaled, -32768, 32767).astype(np.int16)
+        else:
+            out_factor = self.out_gain * (10.0 ** (self.out_boost_db / 20.0))
+            if abs(out_factor - 1.0) > 1e-3:
+                scaled = arr.astype(np.float32) * out_factor
+                arr = np.clip(scaled, -32768, 32767).astype(np.int16)
         outdata[:, 0] = arr
         self.rx_rms = float(np.sqrt(np.mean(arr.astype(np.float32) ** 2)) + 1e-9) / 32768.0
         with self._lock:

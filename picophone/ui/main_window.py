@@ -145,10 +145,24 @@ class MainWindow(QMainWindow):
         body.addLayout(col, 1)
 
         sliders = QHBoxLayout()
+        col_mic = QVBoxLayout(); col_spk = QVBoxLayout()
         self.sl_mic = QSlider(Qt.Vertical, minimum=0, maximum=1000, value=self.cfg.audio.rec_level)
         self.sl_spk = QSlider(Qt.Vertical, minimum=0, maximum=1000, value=self.cfg.audio.play_volume)
         self.sl_mic.setFixedHeight(70); self.sl_spk.setFixedHeight(70)
-        sliders.addWidget(self.sl_mic); sliders.addWidget(self.sl_spk)
+        # PicoPhone-style "+10 dB" toggle buttons under each slider.
+        self.btn_mic_boost = QToolButton(text="+10", checkable=True, objectName="boost")
+        self.btn_spk_boost = QToolButton(text="+10", checkable=True, objectName="boost")
+        self.btn_mic_boost.setToolTip("Mic +10 dB boost (matches PicoPhone 1.65)")
+        self.btn_spk_boost.setToolTip("Speaker +10 dB boost (matches PicoPhone 1.65)")
+        for b in (self.btn_mic_boost, self.btn_spk_boost):
+            b.setFixedSize(28, 18)
+        self.btn_mic_boost.setChecked(self.cfg.audio.in_gain_db  >= 9.5)
+        self.btn_spk_boost.setChecked(self.cfg.audio.out_gain_db >= 9.5)
+        col_mic.addWidget(self.sl_mic, 0, Qt.AlignHCenter)
+        col_mic.addWidget(self.btn_mic_boost, 0, Qt.AlignHCenter)
+        col_spk.addWidget(self.sl_spk, 0, Qt.AlignHCenter)
+        col_spk.addWidget(self.btn_spk_boost, 0, Qt.AlignHCenter)
+        sliders.addLayout(col_mic); sliders.addLayout(col_spk)
         body.addLayout(sliders)
         outer.addLayout(body, 1)
 
@@ -179,6 +193,8 @@ class MainWindow(QMainWindow):
         self.btn_about.clicked.connect(self._on_about)
         self.sl_mic.valueChanged.connect(self._on_mic_slider)
         self.sl_spk.valueChanged.connect(self._on_spk_slider)
+        self.btn_mic_boost.toggled.connect(self._on_mic_boost)
+        self.btn_spk_boost.toggled.connect(self._on_spk_boost)
         self.mic_led.clicked.connect(self._toggle_mic_mute)
         self.spk_led.clicked.connect(self._toggle_spk_mute)
 
@@ -371,6 +387,22 @@ class MainWindow(QMainWindow):
         eng = getattr(self.ctrl, "_engine", None)
         if eng is not None:
             eng.out_gain = max(0.0, min(1.0, v / 1000.0))
+
+    def _on_mic_boost(self, on: bool) -> None:
+        db = 10.0 if on else 0.0
+        self.cfg.audio.in_gain_db = db
+        self.cfg.save()
+        eng = getattr(self.ctrl, "_engine", None)
+        if eng is not None:
+            eng.in_boost_db = db
+
+    def _on_spk_boost(self, on: bool) -> None:
+        db = 10.0 if on else 0.0
+        self.cfg.audio.out_gain_db = db
+        self.cfg.save()
+        eng = getattr(self.ctrl, "_engine", None)
+        if eng is not None:
+            eng.out_boost_db = db
 
     def _toggle_mic_mute(self) -> None:
         eng = getattr(self.ctrl, "_engine", None)
