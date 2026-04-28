@@ -90,13 +90,25 @@ def _deep_filter(spec: np.ndarray, coefs: np.ndarray) -> np.ndarray:
 class DfnOnnxPostProcessor:
     """Drop-in replacement for the torch-based _DfnPostProcessor.
 
-    Same .process(int16_pcm) -> int16_pcm contract."""
+    Same .process(int16_pcm) -> int16_pcm contract.
+
+    Streaming strategy: DFN3's recurrent GRUs need a long context window
+    to produce non-robotic output.  The exported ONNX has no state in/out,
+    so each ort.run() call starts from h0=0.  We compensate by buffering
+    audio into a sliding window of WINDOW_SAMPLES (default 200 ms = 10
+    DFN hops) and processing the whole window every call.  Returns the
+    chunk corresponding to the current input frame, which is now delayed
+    by WINDOW_SAMPLES - frame_samples (~180 ms at 20 ms frames).
+    """
+
+    WINDOW_MS = 200            # 10 DFN hops; trade-off vs. mouth-to-ear latency
 
     def __init__(self, frame_samples: int, sample_rate_hz: int) -> None:
         if sample_rate_hz != SR:
             log.warning("DFN3 expects %d Hz, got %d — passthrough", SR, sample_rate_hz)
         self._frame = int(frame_samples)
         self._sr = int(sample_rate_hz)
+        self._window = SR * self.WINDOW_MS // 1000     # 9600 samples at 48 kHz
 
         import libdf
         self._libdf = libdf
@@ -114,61 +126,76 @@ class DfnOnnxPostProcessor:
         self._enc     = ort.InferenceSession(str(models / "enc.onnx"),     opts, providers=provider)
         self._erb_dec = ort.InferenceSession(str(models / "erb_dec.onnx"), opts, providers=provider)
         self._df_dec  = ort.InferenceSession(str(models / "df_dec.onnx"),  opts, providers=provider)
-        log.info("DFN3-ONNX ready (no torch). Models from %s", models)
 
-    def process(self, pcm_int16: np.ndarray) -> np.ndarray:
-        if pcm_int16.size == 0:
-            return pcm_int16
-        audio = (pcm_int16.astype(np.float32) / 32768.0).reshape(1, -1)
+        # Sliding-window buffers (int16 in, int16 out).  in_buf accumulates
+        # raw mic; out_buf holds the last enhanced window so we can serve a
+        # frame from its tail on each call.
+        self._in_buf  = np.zeros(self._window, dtype=np.int16)
+        self._out_buf = np.zeros(self._window, dtype=np.int16)
+        log.info("DFN3-ONNX ready (window=%d ms, no torch). Models from %s",
+                 self.WINDOW_MS, models)
 
-        # ---- analysis (STFT) ----
-        spec = self._df.analysis(audio)            # [1, T, F=481] complex64
+    def _enhance_window(self, win_int16: np.ndarray) -> np.ndarray:
+        """Run DFN3 on a fixed-size window (int16 -> int16, same length)."""
+        audio = (win_int16.astype(np.float32) / 32768.0).reshape(1, -1)
+        spec = self._df.analysis(audio)            # [1, T, 481] complex64
 
-        # ---- features ----
-        erb_mag  = self._libdf.erb(spec, self._erb_widths)          # [1, T, 32] float32
-        erb_feat = self._libdf.erb_norm(erb_mag, NORM_ALPHA)        # [1, T, 32]
-        spec_feat = self._libdf.unit_norm(spec[..., :NB_DF].copy(), NORM_ALPHA)  # complex
-        # ONNX shapes:
-        #   feat_erb  [B=1, 1, T, 32]
-        #   feat_spec [B=1, 2, T, 96]   (re/im as channel)
+        erb_mag  = self._libdf.erb(spec, self._erb_widths)
+        erb_feat = self._libdf.erb_norm(erb_mag, NORM_ALPHA)
+        spec_feat = self._libdf.unit_norm(spec[..., :NB_DF].copy(), NORM_ALPHA)
         feat_erb_nn  = erb_feat[:, np.newaxis, :, :].astype(np.float32)
         re = np.real(spec_feat).astype(np.float32)
         im = np.imag(spec_feat).astype(np.float32)
-        feat_spec_nn = np.stack([re[0], im[0]], axis=0)[np.newaxis, ...]    # [1, 2, T, 96]
+        feat_spec_nn = np.stack([re[0], im[0]], axis=0)[np.newaxis, ...]
 
-        # ---- encoder ----
-        e0, e1, e2, e3, emb, c0, _lsnr = self._enc.run(
-            None, {"feat_erb": feat_erb_nn, "feat_spec": feat_spec_nn},
-        )
-
-        # ---- ERB gain decoder ----
+        e0, e1, e2, e3, emb, c0, _ = self._enc.run(
+            None, {"feat_erb": feat_erb_nn, "feat_spec": feat_spec_nn})
         gain = self._erb_dec.run(
-            None, {"emb": emb, "e3": e3, "e2": e2, "e1": e1, "e0": e0},
-        )[0]   # [1, 1, T, 32] float32
-
-        # ---- expand 32-band gain to 481 bins via erb_inv, apply ----
-        # erb_inv: [B, T, 32] -> [B, T, 481]
-        gain_full = self._libdf.erb_inv(gain[:, 0], self._erb_widths)   # [1, T, 481]
+            None, {"emb": emb, "e3": e3, "e2": e2, "e1": e1, "e0": e0})[0]
+        gain_full = self._libdf.erb_inv(gain[:, 0], self._erb_widths)
         spec_g = spec * gain_full.astype(np.complex64)
 
-        # ---- DF coefficients decoder ----
         df_out = self._df_dec.run(None, {"emb": emb, "c0": c0})
-        # output 0: 'coefs' [B, T, 96, 10]   (5 complex coefs as 10 floats)
-        coefs_arr = df_out[0]                                            # float32
+        coefs_arr = df_out[0]
         T = coefs_arr.shape[1]
-        # reshape [1, T, 96, 10] -> 5 complex per (T, F)
         coefs = coefs_arr.reshape(1, T, NB_DF, DF_ORDER, 2)
-        coefs_c = (coefs[..., 0] + 1j * coefs[..., 1]).astype(np.complex64)  # [1, T, 96, 5]
-        spec_clean = _deep_filter(spec_g[0], coefs_c[0])[np.newaxis]      # [1, T, 481]
+        coefs_c = (coefs[..., 0] + 1j * coefs[..., 1]).astype(np.complex64)
+        spec_clean = _deep_filter(spec_g[0], coefs_c[0])[np.newaxis]
 
-        # ---- synthesis (ISTFT) ----
-        out = self._df.synthesis(spec_clean)                              # [1, T_audio]
+        out = self._df.synthesis(spec_clean)
         out_pcm = (np.clip(out[0], -1.0, 1.0) * 32768.0).astype(np.int16)
-        # libdf.synthesis may return slightly different length due to STFT framing;
-        # pad/truncate to match input.
-        n = pcm_int16.size
+        n = win_int16.size
         if out_pcm.size < n:
             out_pcm = np.pad(out_pcm, (0, n - out_pcm.size))
         elif out_pcm.size > n:
             out_pcm = out_pcm[:n]
         return out_pcm
+
+    def process(self, pcm_int16: np.ndarray) -> np.ndarray:
+        """Sliding-window streaming wrapper.
+
+        On every captured frame we:
+          1. shift _in_buf left by frame_samples and append the new frame at
+             the tail (so the window holds the last WINDOW_MS of audio)
+          2. enhance the entire window in one ort.run() call — DFN3's GRUs
+             then have ~10 hops of context per pass, far better than the 2
+             hops we'd give them with per-frame processing
+          3. cache the enhanced window in _out_buf
+          4. return the *tail* frame_samples of _out_buf, which corresponds
+             to the freshly processed input — but with WINDOW_MS - frame
+             samples of look-back already accounted for by the GRUs
+
+        Latency: a sample appears in the output only after the window has
+        rolled forward enough to include it, i.e. one frame after capture.
+        Total added latency ≈ WINDOW_MS - frame_ms (~180 ms at default
+        20 ms frame, 200 ms window) sitting in the GRU context.
+        """
+        n = pcm_int16.size
+        if n == 0:
+            return pcm_int16
+        # advance buffer
+        self._in_buf = np.concatenate([self._in_buf[n:], pcm_int16.astype(np.int16)])
+        # process whole window
+        self._out_buf = self._enhance_window(self._in_buf)
+        # return the most recent frame from the cleaned window
+        return self._out_buf[-n:].copy()
