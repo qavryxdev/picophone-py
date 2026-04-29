@@ -272,6 +272,12 @@ class CallController(QObject):
     # -------- signaling callbacks --------
 
     async def _on_invite(self, inv: CallInvite) -> None:
+        # Self-call loopback: this is our own INVITE bouncing back.  Two
+        # AudioEngines (caller + callee) on the same default audio device
+        # would crash PortAudio.  Drop silently.
+        if inv.call_id in self._pending:
+            log.info("INVITE rx is our own loopback cid=%s; dropping", inv.call_id)
+            return
         # Idempotent: caller may retransmit INVITE if our ACCEPT got dropped.
         # If we already accepted this cid, just resend the ACCEPT.
         prev = self._accepted_replies.get(inv.call_id)

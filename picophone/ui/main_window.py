@@ -149,15 +149,15 @@ class MainWindow(QMainWindow):
         self.sl_mic = QSlider(Qt.Vertical, minimum=0, maximum=1000, value=self.cfg.audio.rec_level)
         self.sl_spk = QSlider(Qt.Vertical, minimum=0, maximum=1000, value=self.cfg.audio.play_volume)
         self.sl_mic.setFixedHeight(70); self.sl_spk.setFixedHeight(70)
-        # PicoPhone-style "+10 dB" toggle buttons under each slider.
-        self.btn_mic_boost = QToolButton(text="+10", checkable=True, objectName="boost")
-        self.btn_spk_boost = QToolButton(text="+10", checkable=True, objectName="boost")
-        self.btn_mic_boost.setToolTip("Mic +10 dB boost (matches PicoPhone 1.65)")
-        self.btn_spk_boost.setToolTip("Speaker +10 dB boost (matches PicoPhone 1.65)")
+        # PicoPhone-style "+30 dB" toggle buttons under each slider.
+        self.btn_mic_boost = QToolButton(text="+30", checkable=True, objectName="boost")
+        self.btn_spk_boost = QToolButton(text="+30", checkable=True, objectName="boost")
+        self.btn_mic_boost.setToolTip("Mic +30 dB boost")
+        self.btn_spk_boost.setToolTip("Speaker +30 dB boost")
         for b in (self.btn_mic_boost, self.btn_spk_boost):
             b.setFixedSize(28, 18)
-        self.btn_mic_boost.setChecked(self.cfg.audio.in_gain_db  >= 9.5)
-        self.btn_spk_boost.setChecked(self.cfg.audio.out_gain_db >= 9.5)
+        self.btn_mic_boost.setChecked(self.cfg.audio.in_gain_db  >= 29.5)
+        self.btn_spk_boost.setChecked(self.cfg.audio.out_gain_db >= 29.5)
         col_mic.addWidget(self.sl_mic, 0, Qt.AlignHCenter)
         col_mic.addWidget(self.btn_mic_boost, 0, Qt.AlignHCenter)
         col_spk.addWidget(self.sl_spk, 0, Qt.AlignHCenter)
@@ -389,7 +389,7 @@ class MainWindow(QMainWindow):
             eng.out_gain = max(0.0, min(1.0, v / 1000.0))
 
     def _on_mic_boost(self, on: bool) -> None:
-        db = 10.0 if on else 0.0
+        db = 30.0 if on else 0.0
         self.cfg.audio.in_gain_db = db
         self.cfg.save()
         eng = getattr(self.ctrl, "_engine", None)
@@ -397,7 +397,7 @@ class MainWindow(QMainWindow):
             eng.in_boost_db = db
 
     def _on_spk_boost(self, on: bool) -> None:
-        db = 10.0 if on else 0.0
+        db = 30.0 if on else 0.0
         self.cfg.audio.out_gain_db = db
         self.cfg.save()
         eng = getattr(self.ctrl, "_engine", None)
