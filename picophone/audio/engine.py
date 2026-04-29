@@ -87,6 +87,12 @@ class AudioEngine:
         self._render_q: deque[np.ndarray] = deque(maxlen=8)   # ~160ms at 20ms frames
         self._lock = threading.Lock()
         self._silent_render = np.zeros(self._frame_samples, dtype=np.int16)
+        # DFN-output fade-off during prolonged input silence: DFN3 hallucinates
+        # band-limited noise on quiet frames; instead of hard-gating it, apply
+        # a soft per-frame gain that decays toward 0 after a short grace
+        # period and snaps back to 1 immediately on real speech.
+        self._silence_count = 0
+        self._silence_gain = 1.0
 
     def start(self) -> None:
         if sd is None or opuslib is None:
@@ -134,6 +140,8 @@ class AudioEngine:
         self._aec = NullAec()
         self._post = None
         self._render_q.clear()
+        self._silence_count = 0
+        self._silence_gain = 1.0
 
     @staticmethod
     def _dev(d):
@@ -145,35 +153,37 @@ class AudioEngine:
         with self._lock:
             self._jitter.append(opus_payload)
 
+    SILENCE_GRACE_FRAMES = 5            # ~100 ms at 20 ms framing before fade starts
+    SILENCE_FADE_PER_FRAME = 0.05       # gain step per silent frame (full mute in ~400 ms)
+
     def _on_capture(self, indata, frames, time, status):
         if status:
             log.debug("capture status: %s", status)
         pcm = indata[:, 0].copy()
-        # Pre-AEC silence check: if the raw mic frame is below VAD threshold,
-        # skip the post-processor entirely.  DFN3 has a tendency to
-        # hallucinate band-limited noise when fed near-silence, and that
-        # noise can clear the post-processed VAD threshold and end up on
-        # the wire.  FDAF doesn't hallucinate but skipping it on silence
-        # saves CPU.
-        if self.muted or self._below_threshold(pcm):
+        if self.muted:
             self.tx_rms = 0.0
             return
+        raw_silent = self._below_threshold(pcm)
         with self._lock:
             render = self._render_q.popleft() if self._render_q else self._silent_render
-        # Either FDAF (classic) or DFN (AI) — never both.
         if self._post is not None:
             pcm = self._post.process(pcm)
-        else:
+            if raw_silent:
+                self._silence_count += 1
+                if self._silence_count > self.SILENCE_GRACE_FRAMES:
+                    self._silence_gain = max(0.0, self._silence_gain - self.SILENCE_FADE_PER_FRAME)
+            else:
+                self._silence_count = 0
+                self._silence_gain = 1.0
+            if self._silence_gain < 1.0:
+                pcm = (pcm.astype(np.float32) * self._silence_gain).astype(np.int16)
+        elif not raw_silent:
             pcm = self._aec.process(pcm, render)
         in_factor = self.in_gain * (10.0 ** (self.in_boost_db / 20.0))
         if abs(in_factor - 1.0) > 1e-3:
             scaled = pcm.astype(np.float32) * in_factor
             pcm = np.clip(scaled, -32768, 32767).astype(np.int16)
         self.tx_rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)) + 1e-9) / 32768.0
-        # Recheck threshold after AEC: linear AEC may have removed echo
-        # bringing residual below floor; skip those too.
-        if self._below_threshold(pcm):
-            return
         try:
             payload = self._enc.encode(pcm.tobytes(), self._frame_samples)
             self.on_packet(payload)
