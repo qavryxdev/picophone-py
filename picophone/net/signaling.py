@@ -79,6 +79,7 @@ class SignalingServer(asyncio.DatagramProtocol):
                 nonce_a = base64.b64decode(msg.get("nonce", ""))
             except Exception:  # noqa: BLE001
                 nonce_a = b""
+            log.info("INVITE rx cid=%s from=%s addr=%s", cid, msg.get("from", "?"), addr)
             inv = CallInvite(
                 call_id=cid,
                 from_id=msg.get("from", "?"),
@@ -93,10 +94,13 @@ class SignalingServer(asyncio.DatagramProtocol):
                 nonce_b = base64.b64decode(msg.get("nonce", ""))
             except Exception:  # noqa: BLE001
                 nonce_b = b""
+            log.info("ACCEPT rx cid=%s addr=%s", cid, addr)
             self.on_accept(cid, int(msg.get("media_port", 0)), nonce_b)
         elif t == "REJECT":
+            log.info("REJECT rx cid=%s reason=%s", cid, msg.get("reason", ""))
             self.on_reject(cid, msg.get("reason", ""))
         elif t == "BYE":
+            log.info("BYE rx cid=%s addr=%s", cid, addr)
             self.on_bye(cid)
         elif t == "MSG":
             self.on_msg(msg.get("from", "?"), msg.get("text", ""), addr)
@@ -117,12 +121,21 @@ class SignalingServer(asyncio.DatagramProtocol):
                    "from": self.identity, "media_port": media_port,
                    "codecs": ["opus/48000/1"],
                    "nonce": base64.b64encode(nonce_a).decode("ascii")}, addr)
+        log.info("INVITE tx cid=%s to=%s", cid, addr)
         return cid
+
+    def invite_retransmit(self, cid: str, addr, media_port: int, nonce_a: bytes) -> None:
+        self.send({"v": PROTOCOL_VERSION, "t": "INVITE", "id": cid,
+                   "from": self.identity, "media_port": media_port,
+                   "codecs": ["opus/48000/1"],
+                   "nonce": base64.b64encode(nonce_a).decode("ascii")}, addr)
+        log.info("INVITE retx cid=%s to=%s", cid, addr)
 
     def accept(self, call_id: str, media_port: int, addr, nonce_b: bytes) -> None:
         self.send({"v": PROTOCOL_VERSION, "t": "ACCEPT", "id": call_id,
                    "media_port": media_port, "codec": "opus/48000/1",
                    "nonce": base64.b64encode(nonce_b).decode("ascii")}, addr)
+        log.info("ACCEPT tx cid=%s to=%s", call_id, addr)
 
     def reject(self, call_id: str, reason: str, addr) -> None:
         self.send({"v": PROTOCOL_VERSION, "t": "REJECT", "id": call_id,

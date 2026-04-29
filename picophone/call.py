@@ -59,6 +59,8 @@ class CallController(QObject):
         self._pending_invites: dict[str, CallInvite] = {}
         self._ringing_tasks: dict[str, asyncio.Task] = {}    # cid -> ringing-watch keepalive
         self._ringing_pongs: dict[str, float] = {}           # cid -> last PONG monotonic time
+        self._invite_retx: dict[str, asyncio.Task] = {}      # cid -> INVITE retransmit task (caller side)
+        self._accepted_replies: dict[str, tuple] = {}        # cid -> (port, addr, nonce_b) for ACCEPT retransmits
         self._active_id: str | None = None
         self._active_peer: tuple | None = None
 
@@ -185,20 +187,26 @@ class CallController(QObject):
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()
         self._pending[cid] = _Pending(cid, peer, waiter, nonce_a)
+        self._invite_retx[cid] = asyncio.create_task(
+            self._invite_retransmit(cid, peer, nonce_a, waiter)
+        )
 
         try:
             _accepted_peer_media, nonce_b = await asyncio.wait_for(waiter, timeout=30.0)
         except asyncio.TimeoutError:
             self._pending.pop(cid, None)
+            self._cancel_invite_retx(cid)
             await self._end_call()
             self.log_event.emit("No answer from remote PicoPhone")
             self.notification.emit("error", f"No answer from {target}.\n"
                                             "Remote PicoPhone may be offline or unreachable.")
             return
         except OSError as e:
+            self._cancel_invite_retx(cid)
             await self._end_call()
             self.log_event.emit(str(e))
             return
+        self._cancel_invite_retx(cid)
 
         self._sec.key = _derive_media_key(self.cfg.net.password, nonce_a, nonce_b) if self.cfg.net.encrypt else b""
         # Now that the callee has accepted, open the audio engine and route
@@ -219,6 +227,7 @@ class CallController(QObject):
         self._sec.key = _derive_media_key(self.cfg.net.password, inv.nonce_a, nonce_b) if self.cfg.net.encrypt else b""
         self._open_media()
         self._sig.accept(call_id, self.cfg.net.port, inv.addr, nonce_b)
+        self._accepted_replies[call_id] = (self.cfg.net.port, inv.addr, nonce_b)
         self._media_peer = inv.addr
         self._active_id, self._active_peer = call_id, inv.addr
         self._start_keepalive()
@@ -238,6 +247,7 @@ class CallController(QObject):
         # 1) Active (already-ACCEPT'd) call: notify peer.
         if self._active_id and self._active_peer and self._sig:
             self._sig.bye(self._active_id, self._active_peer)
+            self._accepted_replies.pop(self._active_id, None)
         # 2) In-flight outbound INVITEs (caller pressed DISC during ringing
         #    before peer accepted): tell the peer to stop ringing.
         if self._sig:
@@ -248,6 +258,7 @@ class CallController(QObject):
                     pass
                 if not p.waiter.done():
                     p.waiter.cancel()
+                self._cancel_invite_retx(cid)
         self._pending.clear()
         self._active_id = self._active_peer = None
         self._media_peer = None
@@ -261,6 +272,16 @@ class CallController(QObject):
     # -------- signaling callbacks --------
 
     async def _on_invite(self, inv: CallInvite) -> None:
+        # Idempotent: caller may retransmit INVITE if our ACCEPT got dropped.
+        # If we already accepted this cid, just resend the ACCEPT.
+        prev = self._accepted_replies.get(inv.call_id)
+        if prev is not None and self._sig is not None:
+            log.info("INVITE retransmit for already-accepted cid=%s; resending ACCEPT", inv.call_id)
+            self._sig.accept(inv.call_id, prev[0], prev[1], prev[2])
+            return
+        if inv.call_id in self._pending_invites:
+            log.info("INVITE retransmit while still ringing cid=%s", inv.call_id)
+            return
         self._pending_invites[inv.call_id] = inv
         peer_repr = f"{inv.from_id} ({inv.addr[0]}:{inv.addr[1]})"
         self.log_event.emit(f"Incoming call from {peer_repr}")
@@ -306,8 +327,14 @@ class CallController(QObject):
 
     def on_accept(self, call_id: str, peer_media_port: int, nonce_b: bytes) -> None:
         p = self._pending.pop(call_id, None)
-        if p and not p.waiter.done():
-            p.waiter.set_result((peer_media_port, nonce_b))
+        if p is None:
+            log.warning("on_accept: no pending invite for cid=%s (already resolved or unknown)", call_id)
+            return
+        if p.waiter.done():
+            log.warning("on_accept: waiter already done for cid=%s", call_id)
+            return
+        log.info("on_accept: waking waiter cid=%s peer_port=%d", call_id, peer_media_port)
+        p.waiter.set_result((peer_media_port, nonce_b))
 
     def on_reject(self, call_id: str, reason: str) -> None:
         p = self._pending.pop(call_id, None)
@@ -414,6 +441,25 @@ class CallController(QObject):
         if self._loop is None:
             return
         asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    INVITE_RETX_INTERVAL = 1.5
+    INVITE_RETX_MAX = 4
+
+    async def _invite_retransmit(self, cid: str, peer: tuple, nonce_a: bytes,
+                                 waiter: asyncio.Future) -> None:
+        try:
+            for _ in range(self.INVITE_RETX_MAX):
+                await asyncio.sleep(self.INVITE_RETX_INTERVAL)
+                if waiter.done() or self._sig is None:
+                    return
+                self._sig.invite_retransmit(cid, peer, self.cfg.net.port, nonce_a)
+        except asyncio.CancelledError:
+            pass
+
+    def _cancel_invite_retx(self, cid: str) -> None:
+        t = self._invite_retx.pop(cid, None)
+        if t and not t.done():
+            t.cancel()
 
     # -------- keepalive --------
 
