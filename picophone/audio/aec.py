@@ -147,47 +147,125 @@ class _WebrtcAec:
     kLowSuppression internally and APM's delay estimator does the rest.
     """
 
+    # Envelope-based delay tracker: cross-correlate the magnitude envelope of
+    # recent playback against capture to find the actual local round-trip.
+    ENV_HZ      = 200          # envelope sample rate (5 ms hop)
+    ENV_SECONDS = 1.0          # ring length
+    MEAS_FRAMES = 25           # measure every ~500 ms (25 × 20 ms frames)
+    SEARCH_MS   = 400          # max delay searched
+    WINDOW_MS   = 250          # correlation window length
+    MIN_CORR    = 0.30         # below this we trust nothing and keep last value
+    MAX_STEP_MS = 20           # rate-limit per-update jump for smoothness
+
     def __init__(self, frame_samples: int, sample_rate_hz: int, ns: bool, vad: bool) -> None:
         from webrtc_audio_processing import AudioProcessingModule  # type: ignore
         self.apm = AudioProcessingModule(aec_type=2, enable_ns=False, enable_vad=False)
         # set_stream_format signature is (in_rate, in_channels, out_rate, out_channels);
         # without all four the binding leaves the OUTPUT config at the default
-        # rate (which differs from in_rate), so process_stream returns a buffer
-        # of the wrong length and the audio comes out as garbage.
+        # rate so process_stream returns a buffer of the wrong length.
         self.apm.set_stream_format(sample_rate_hz, 1, sample_rate_hz, 1)
         self.apm.set_reverse_stream_format(sample_rate_hz, 1)
-        # process_reverse_stream() calls ap->set_stream_delay_ms(system_delay)
-        # internally, so without this APM thinks playback==capture (delay 0)
-        # and the AEC adaptive filter looks for echo at the wrong tap →
-        # wideband distortion.  60 ms is a realistic OS-level round-trip
-        # for default PortAudio buffers; the AEC still tracks small drifts
-        # adaptively from there.
-        self.apm.set_system_delay(60)
+        # process_reverse_stream() pushes self._delay_ms into APM via
+        # set_stream_delay_ms each call.  60 ms is just the seed; we
+        # refine it from real local echo via _maybe_update_delay().
+        self._delay_ms = 60
+        self.apm.set_system_delay(self._delay_ms)
         self._chunk = sample_rate_hz // 100              # 10 ms chunk (binding requirement)
         if frame_samples % self._chunk:
             log.warning("WebRTC AEC: frame %d not a multiple of %d (10 ms) — passthrough",
                         frame_samples, self._chunk)
             self._chunk = 0
         self._lock = threading.Lock()
+        # Envelope ring buffers used for echo-delay estimation.
+        self._env_hop = sample_rate_hz // self.ENV_HZ          # samples per env point
+        self._env_len = int(self.ENV_HZ * self.ENV_SECONDS)
+        self._capture_env = np.zeros(self._env_len, dtype=np.float32)
+        self._render_env  = np.zeros(self._env_len, dtype=np.float32)
+        self._env_pos = 0
+        self._frames_since_meas = 0
 
     def process(self, capture_int16: np.ndarray, render_int16: np.ndarray) -> np.ndarray:
         if self._chunk == 0 or capture_int16.size != render_int16.size:
             return capture_int16
         out = np.empty_like(capture_int16)
         for i in range(0, capture_int16.size, self._chunk):
+            cap_chunk = capture_int16[i:i + self._chunk]
+            ren_chunk = render_int16[i:i + self._chunk]
             # Lockstep per 10 ms chunk: APM expects process_reverse_stream
             # immediately followed by process_stream so the internal delay
-            # tracker sees a stable temporal ordering.  Calling them from
-            # different threads (one per audio callback) confused APM into
-            # frame-level gating, which the user heard as "fast interrupted".
-            self.apm.process_reverse_stream(render_int16[i:i + self._chunk].tobytes())
-            out_bytes = self.apm.process_stream(capture_int16[i:i + self._chunk].tobytes())
+            # tracker sees a stable temporal ordering.
+            self.apm.process_reverse_stream(ren_chunk.tobytes())
+            out_bytes = self.apm.process_stream(cap_chunk.tobytes())
             arr = np.frombuffer(out_bytes, dtype=np.int16)
             if arr.size == self._chunk:
                 out[i:i + self._chunk] = arr
             else:
-                out[i:i + self._chunk] = capture_int16[i:i + self._chunk]
+                out[i:i + self._chunk] = cap_chunk
+            self._update_envs(cap_chunk, ren_chunk)
+        self._frames_since_meas += 1
+        if self._frames_since_meas >= self.MEAS_FRAMES:
+            self._frames_since_meas = 0
+            self._maybe_update_delay()
         return out
+
+    def _update_envs(self, cap_chunk: np.ndarray, ren_chunk: np.ndarray) -> None:
+        hop = self._env_hop
+        n = cap_chunk.size // hop
+        if n == 0:
+            return
+        cap_f = cap_chunk[: n * hop].astype(np.float32).reshape(n, hop)
+        ren_f = ren_chunk[: n * hop].astype(np.float32).reshape(n, hop)
+        cap_pts = np.abs(cap_f).mean(axis=1) / 32768.0
+        ren_pts = np.abs(ren_f).mean(axis=1) / 32768.0
+        for j in range(n):
+            slot = self._env_pos % self._env_len
+            self._capture_env[slot] = cap_pts[j]
+            self._render_env[slot]  = ren_pts[j]
+            self._env_pos += 1
+
+    def _maybe_update_delay(self) -> None:
+        ren_max = float(self._render_env.max())
+        cap_max = float(self._capture_env.max())
+        if ren_max < 1e-3:
+            log.info("AEC tracker: render silent (peak=%.4f, cap=%.4f) — keeping %d ms",
+                     ren_max, cap_max, self._delay_ms)
+            return
+        win  = int(self.ENV_HZ * self.WINDOW_MS / 1000)        # corr window length (env pts)
+        nlag = int(self.ENV_HZ * self.SEARCH_MS / 1000)        # max search range (env pts)
+        if self._env_pos < win + nlag or self._env_len < win + nlag:
+            return  # not enough history yet
+        # Roll buffers so the most recent point sits at index -1.
+        idx = self._env_pos % self._env_len
+        cap = np.roll(self._capture_env, -idx)
+        ren = np.roll(self._render_env,  -idx)
+        cap_w = cap[-win:]
+        cap_w = cap_w - cap_w.mean()
+        cap_norm = float(np.linalg.norm(cap_w)) + 1e-9
+        best_score = 0.0
+        best_lag = self._delay_ms * self.ENV_HZ // 1000
+        for lag in range(2, nlag):
+            ren_w = ren[-(win + lag):-lag]
+            if ren_w.size != win:
+                continue
+            ren_w = ren_w - ren_w.mean()
+            score = float(np.dot(cap_w, ren_w) / (cap_norm * (np.linalg.norm(ren_w) + 1e-9)))
+            if score > best_score:
+                best_score = score
+                best_lag = lag
+        peak_ms = best_lag * 1000 // self.ENV_HZ
+        if best_score < self.MIN_CORR:
+            log.info("AEC tracker: weak corr=%.2f at %d ms (ren=%.3f cap=%.3f) — keeping %d ms",
+                     best_score, peak_ms, ren_max, cap_max, self._delay_ms)
+            return
+        new_delay = peak_ms                                   # back to ms
+        # Rate-limit the jump so AEC adaptive filter has time to follow.
+        diff = new_delay - self._delay_ms
+        if diff >  self.MAX_STEP_MS: new_delay = self._delay_ms + self.MAX_STEP_MS
+        if diff < -self.MAX_STEP_MS: new_delay = self._delay_ms - self.MAX_STEP_MS
+        if new_delay != self._delay_ms:
+            self._delay_ms = int(new_delay)
+            self.apm.set_system_delay(self._delay_ms)
+            log.info("AEC: dynamic delay -> %d ms (corr=%.2f)", self._delay_ms, best_score)
 
     def reset(self) -> None:
         # APM has no public reset; left as a no-op.

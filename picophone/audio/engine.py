@@ -177,7 +177,12 @@ class AudioEngine:
                 self._silence_gain = 1.0
             if self._silence_gain < 1.0:
                 pcm = (pcm.astype(np.float32) * self._silence_gain).astype(np.int16)
-        elif not raw_silent:
+        else:
+            # AEC must run on EVERY frame (including ones below the input
+            # threshold) — speaker -> mic echo is often quieter than the
+            # user's own voice but still loud enough for the remote side
+            # to hear themselves.  Skipping AEC on silence frames lets that
+            # echo straight through.
             pcm = self._aec.process(pcm, render)
         in_factor = self.in_gain * (10.0 ** (self.in_boost_db / 20.0))
         if abs(in_factor - 1.0) > 1e-3:
