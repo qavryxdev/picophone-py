@@ -5,6 +5,7 @@ __pycache__/
 .Python
 build/
 dist/
+dist-portable/
 *.spec
 tools/upx-*/
 *.egg-info/
