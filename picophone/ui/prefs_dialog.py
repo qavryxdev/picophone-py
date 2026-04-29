@@ -103,13 +103,20 @@ class PrefsDialog(QDialog):
         self.sb_bitrate = QSpinBox(); self.sb_bitrate.setRange(6_000, 128_000); self.sb_bitrate.setSingleStep(2000)
         self.sb_bitrate.setSuffix(" bps")
 
-        self.cb_aec = QCheckBox("Echo cancellation — classic FDAF + Wiener (fast, ~5 MB)")
+        self.cb_aec = QCheckBox("Echo cancellation — WebRTC AEC3 (FDAF fallback if unavailable)")
+        self.cb_aec.setToolTip("Cancels the speaker -> mic echo path using "
+                                "webrtc-audio-processing's AEC3-class echo "
+                                "canceller; falls back to the NumPy FDAF + "
+                                "Wiener filter when the WebRTC binding can't "
+                                "be loaded.\n"
+                                "Mutually exclusive with AI mode.")
         self.cb_dfn = QCheckBox("AI mode — DeepFilterNet3 neural NS + dereverb (heavy, ~150 MB)")
-        self.cb_dfn.setToolTip("Replaces the classic AEC with a neural network "
-                                "(DeepFilterNet3, same family as Krisp / Skype).\n"
-                                "Best on headphones / quiet rooms; doesn't need the "
-                                "playback reference signal.\n"
-                                "Mutually exclusive with the classic AEC checkbox.")
+        self.cb_dfn.setToolTip("Replaces the AEC with a neural denoiser + "
+                                "dereverb (DeepFilterNet3, same family as "
+                                "Krisp / Skype).\n"
+                                "Best on headphones / quiet rooms; doesn't "
+                                "need the playback reference signal.\n"
+                                "Mutually exclusive with Echo cancellation.")
         self.cb_ns  = QCheckBox("Noise suppression (when AEC backend supports it)")
         self.cb_vad = QCheckBox("Voice activity detection / silence threshold")
 

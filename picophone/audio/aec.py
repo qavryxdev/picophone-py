@@ -1,17 +1,14 @@
 """Cross-platform acoustic echo cancellation.
 
-Default implementation: NLMS frequency-domain adaptive filter (FDAF) using
-overlap-save, vectorised in NumPy. No native dependencies — works on Windows,
-Linux, and macOS without compilers.
-
-If `webrtc_audio_processing` is installed (Linux: `pip install
-webrtc-audio-processing` after `apt install libwebrtc-audio-processing-dev`)
-we transparently swap to AEC3 which is significantly better, but the project
-is designed to work fine without it.
+Preferred backend: webrtc-audio-processing (AEC3-class echo canceller from
+the WebRTC stack) — best quality on real hardware.  When the binding can't
+be loaded we fall back to a pure-NumPy NLMS frequency-domain adaptive
+filter (FDAF) so the project runs anywhere without compilers.
 """
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from typing import Protocol
 
@@ -133,23 +130,68 @@ class FdafAec:
 
 
 class _WebrtcAec:
-    """Wrapper around webrtc-audio-processing's AudioProcessingModule (AEC3 + NS + VAD).
-    Used only when the optional binding is importable."""
+    """Wrapper around webrtc-audio-processing's AudioProcessingModule.
+
+    The binding wants 10 ms chunks (480 samples at 48 kHz) fed in lockstep:
+    process_reverse_stream(playback) then process_stream(capture).  We split
+    the engine's 20 ms frames in half and call the pair twice.
+
+    Reading the binding's C++ source (audio_processing_module.cpp):
+        aec_type=1 -> echo_control_mobile()    (AECM, narrowband, robotic)
+        aec_type=2 -> echo_cancellation()      (legacy desktop AEC, kLowSuppression)
+        aec_type=3 -> AEC3                     (commented out; not actually enabled)
+        aec_type=0 -> NO AEC at all            (process_stream still HP-filters)
+    So aec_type=2 is the only path that gives real wideband echo cancellation.
+    NS is disabled (vendor NS produces vocoder artefacts on libwebrtc 0.3);
+    set_aec_level / set_system_delay are NOT called — the binding picks
+    kLowSuppression internally and APM's delay estimator does the rest.
+    """
 
     def __init__(self, frame_samples: int, sample_rate_hz: int, ns: bool, vad: bool) -> None:
         from webrtc_audio_processing import AudioProcessingModule  # type: ignore
-        self.apm = AudioProcessingModule(aec_type=2, enable_ns=ns, enable_vad=vad)
-        self.apm.set_stream_format(sample_rate_hz, 1)
-        self.frame = frame_samples
+        self.apm = AudioProcessingModule(aec_type=2, enable_ns=False, enable_vad=False)
+        # set_stream_format signature is (in_rate, in_channels, out_rate, out_channels);
+        # without all four the binding leaves the OUTPUT config at the default
+        # rate (which differs from in_rate), so process_stream returns a buffer
+        # of the wrong length and the audio comes out as garbage.
+        self.apm.set_stream_format(sample_rate_hz, 1, sample_rate_hz, 1)
+        self.apm.set_reverse_stream_format(sample_rate_hz, 1)
+        # process_reverse_stream() calls ap->set_stream_delay_ms(system_delay)
+        # internally, so without this APM thinks playback==capture (delay 0)
+        # and the AEC adaptive filter looks for echo at the wrong tap →
+        # wideband distortion.  60 ms is a realistic OS-level round-trip
+        # for default PortAudio buffers; the AEC still tracks small drifts
+        # adaptively from there.
+        self.apm.set_system_delay(60)
+        self._chunk = sample_rate_hz // 100              # 10 ms chunk (binding requirement)
+        if frame_samples % self._chunk:
+            log.warning("WebRTC AEC: frame %d not a multiple of %d (10 ms) — passthrough",
+                        frame_samples, self._chunk)
+            self._chunk = 0
+        self._lock = threading.Lock()
 
     def process(self, capture_int16: np.ndarray, render_int16: np.ndarray) -> np.ndarray:
-        return self.apm.process_stream(capture_int16, render_int16)
+        if self._chunk == 0 or capture_int16.size != render_int16.size:
+            return capture_int16
+        out = np.empty_like(capture_int16)
+        for i in range(0, capture_int16.size, self._chunk):
+            # Lockstep per 10 ms chunk: APM expects process_reverse_stream
+            # immediately followed by process_stream so the internal delay
+            # tracker sees a stable temporal ordering.  Calling them from
+            # different threads (one per audio callback) confused APM into
+            # frame-level gating, which the user heard as "fast interrupted".
+            self.apm.process_reverse_stream(render_int16[i:i + self._chunk].tobytes())
+            out_bytes = self.apm.process_stream(capture_int16[i:i + self._chunk].tobytes())
+            arr = np.frombuffer(out_bytes, dtype=np.int16)
+            if arr.size == self._chunk:
+                out[i:i + self._chunk] = arr
+            else:
+                out[i:i + self._chunk] = capture_int16[i:i + self._chunk]
+        return out
 
     def reset(self) -> None:
-        try:
-            self.apm.reset()
-        except Exception:  # noqa: BLE001
-            pass
+        # APM has no public reset; left as a no-op.
+        pass
 
 
 def make_post(frame_samples: int, sample_rate_hz: int, enable_dfn: bool):
@@ -175,9 +217,9 @@ def make_aec(frame_samples: int, sample_rate_hz: int, ns: bool = True, vad: bool
     if prefer_webrtc:
         try:
             ec = _WebrtcAec(frame_samples, sample_rate_hz, ns, vad)
-            log.info("AEC: webrtc-audio-processing (AEC3)")
+            log.info("AEC: WebRTC AEC3 (webrtc-audio-processing)")
             return ec
         except Exception as e:  # noqa: BLE001
-            log.info("AEC: webrtc binding unavailable (%s); falling back to FDAF", e)
-    log.info("AEC: NumPy FDAF + Wiener post (block=%d, fs=%d Hz)", frame_samples, sample_rate_hz)
+            log.info("AEC: WebRTC binding unavailable (%s); falling back to FDAF", e)
+    log.info("AEC: NumPy FDAF fallback (block=%d, fs=%d Hz)", frame_samples, sample_rate_hz)
     return FdafAec(frame_samples)
