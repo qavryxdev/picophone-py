@@ -109,14 +109,14 @@ class PrefsDialog(QDialog):
                                 "canceller; falls back to the NumPy FDAF + "
                                 "Wiener filter when the WebRTC binding can't "
                                 "be loaded.\n"
-                                "Mutually exclusive with AI mode.")
+                                "May be combined with AI mode (AEC runs first, "
+                                "DFN3 denoises whatever residue is left).")
         self.cb_dfn = QCheckBox("AI mode — DeepFilterNet3 neural NS + dereverb (heavy, ~150 MB)")
-        self.cb_dfn.setToolTip("Replaces the AEC with a neural denoiser + "
-                                "dereverb (DeepFilterNet3, same family as "
-                                "Krisp / Skype).\n"
-                                "Best on headphones / quiet rooms; doesn't "
-                                "need the playback reference signal.\n"
-                                "Mutually exclusive with Echo cancellation.")
+        self.cb_dfn.setToolTip("Neural denoiser + dereverb (DeepFilterNet3, "
+                                "same family as Krisp / Skype).\n"
+                                "Best on headphones / quiet rooms.\n"
+                                "May be combined with Echo cancellation — "
+                                "DFN3 then runs as a post-processor.")
         self.cb_ns  = QCheckBox("Noise suppression (when AEC backend supports it)")
         self.cb_vad = QCheckBox("Voice activity detection / silence threshold")
 
@@ -132,9 +132,6 @@ class PrefsDialog(QDialog):
         f.addRow(self.cb_dfn)
         f.addRow(self.cb_ns)
         f.addRow(self.cb_vad)
-        # Make AEC and DFN mutually exclusive.
-        self.cb_aec.toggled.connect(lambda on: on and self.cb_dfn.setChecked(False))
-        self.cb_dfn.toggled.connect(lambda on: on and self.cb_aec.setChecked(False))
         f.addRow("Silence threshold:", self.sp_thresh)
         return page
 
@@ -168,7 +165,7 @@ class PrefsDialog(QDialog):
         self._select(self.cb_rate,  a.sample_rate_hz)
         self._select(self.cb_frame, a.frame_ms)
         self.sb_bitrate.setValue(a.opus_bitrate_bps)
-        self.cb_aec.setChecked(a.aec and not a.dfn)
+        self.cb_aec.setChecked(a.aec)
         self.cb_dfn.setChecked(a.dfn)
         self.cb_ns.setChecked(a.ns)
         self.cb_vad.setChecked(a.vad)

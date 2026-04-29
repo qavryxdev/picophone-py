@@ -224,12 +224,8 @@ class _WebrtcAec:
             self._env_pos += 1
 
     def _maybe_update_delay(self) -> None:
-        ren_max = float(self._render_env.max())
-        cap_max = float(self._capture_env.max())
-        if ren_max < 1e-3:
-            log.info("AEC tracker: render silent (peak=%.4f, cap=%.4f) — keeping %d ms",
-                     ren_max, cap_max, self._delay_ms)
-            return
+        if self._render_env.max() < 1e-3:
+            return  # peer/playback silent — can't see echo, keep current delay
         win  = int(self.ENV_HZ * self.WINDOW_MS / 1000)        # corr window length (env pts)
         nlag = int(self.ENV_HZ * self.SEARCH_MS / 1000)        # max search range (env pts)
         if self._env_pos < win + nlag or self._env_len < win + nlag:
@@ -252,12 +248,9 @@ class _WebrtcAec:
             if score > best_score:
                 best_score = score
                 best_lag = lag
-        peak_ms = best_lag * 1000 // self.ENV_HZ
         if best_score < self.MIN_CORR:
-            log.info("AEC tracker: weak corr=%.2f at %d ms (ren=%.3f cap=%.3f) — keeping %d ms",
-                     best_score, peak_ms, ren_max, cap_max, self._delay_ms)
-            return
-        new_delay = peak_ms                                   # back to ms
+            return  # weak correlation — not enough echo to lock onto
+        new_delay = best_lag * 1000 // self.ENV_HZ            # back to ms
         # Rate-limit the jump so AEC adaptive filter has time to follow.
         diff = new_delay - self._delay_ms
         if diff >  self.MAX_STEP_MS: new_delay = self._delay_ms + self.MAX_STEP_MS
@@ -265,7 +258,7 @@ class _WebrtcAec:
         if new_delay != self._delay_ms:
             self._delay_ms = int(new_delay)
             self.apm.set_system_delay(self._delay_ms)
-            log.info("AEC: dynamic delay -> %d ms (corr=%.2f)", self._delay_ms, best_score)
+            log.debug("AEC: dynamic delay -> %d ms (corr=%.2f)", self._delay_ms, best_score)
 
     def reset(self) -> None:
         # APM has no public reset; left as a no-op.

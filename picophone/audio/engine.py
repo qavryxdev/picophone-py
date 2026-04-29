@@ -101,22 +101,13 @@ class AudioEngine:
         self._enc = opuslib.Encoder(rate, 1, opuslib.APPLICATION_VOIP)
         self._enc.bitrate = self.cfg.opus_bitrate_bps
         self._dec = opuslib.Decoder(rate, 1)
-        # AI mode (DFN) and classic mode (FDAF) are mutually exclusive: when
-        # DFN is on, FDAF is bypassed to avoid two stages fighting over the
-        # same residual.  DFN handles noise + dereverb on its own.
-        if self.cfg.dfn:
-            self._aec  = NullAec()
-            self._post = make_post(self._frame_samples, rate, enable_dfn=True)
-            if self._post is None:
-                # Fallback: DFN failed to load; use classic FDAF instead.
-                self._aec = make_aec(self._frame_samples, rate,
-                                     ns=self.cfg.ns, vad=self.cfg.vad) \
-                            if self.cfg.aec else NullAec()
-        else:
-            self._aec  = make_aec(self._frame_samples, rate,
-                                  ns=self.cfg.ns, vad=self.cfg.vad) \
-                        if self.cfg.aec else NullAec()
-            self._post = None
+        # AEC and DFN3 are independent: AEC removes the speaker -> mic echo
+        # path, DFN3 then denoises whatever residue is left.  Either or
+        # both may be enabled by config.
+        self._aec = make_aec(self._frame_samples, rate,
+                             ns=self.cfg.ns, vad=self.cfg.vad) \
+                    if self.cfg.aec else NullAec()
+        self._post = make_post(self._frame_samples, rate, enable_dfn=self.cfg.dfn)
 
         self._stream_in = sd.InputStream(
             samplerate=rate, channels=1, dtype="int16",
@@ -166,6 +157,13 @@ class AudioEngine:
         raw_silent = self._below_threshold(pcm)
         with self._lock:
             render = self._render_q.popleft() if self._render_q else self._silent_render
+        # AEC must run on EVERY frame (including ones below the input
+        # threshold) — speaker -> mic echo is often quieter than the
+        # user's own voice but still loud enough for the remote side
+        # to hear themselves.  Skipping AEC on silence frames lets that
+        # echo straight through.  When AEC is disabled this is a NullAec
+        # passthrough.
+        pcm = self._aec.process(pcm, render)
         if self._post is not None:
             pcm = self._post.process(pcm)
             if raw_silent:
@@ -177,13 +175,6 @@ class AudioEngine:
                 self._silence_gain = 1.0
             if self._silence_gain < 1.0:
                 pcm = (pcm.astype(np.float32) * self._silence_gain).astype(np.int16)
-        else:
-            # AEC must run on EVERY frame (including ones below the input
-            # threshold) — speaker -> mic echo is often quieter than the
-            # user's own voice but still loud enough for the remote side
-            # to hear themselves.  Skipping AEC on silence frames lets that
-            # echo straight through.
-            pcm = self._aec.process(pcm, render)
         in_factor = self.in_gain * (10.0 ** (self.in_boost_db / 20.0))
         if abs(in_factor - 1.0) > 1e-3:
             scaled = pcm.astype(np.float32) * in_factor
