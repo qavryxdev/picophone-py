@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import threading
+import time
 from collections import deque
 from typing import Callable
 
@@ -93,6 +95,16 @@ class AudioEngine:
         # period and snaps back to 1 immediately on real speech.
         self._silence_count = 0
         self._silence_gain = 1.0
+        # Adaptive jitter buffer: track inter-arrival jitter and dynamically
+        # size the playback prefill depth.  On a clean LAN target_depth stays
+        # near the floor (2 frames = 40 ms); on lossy WiFi/4G it grows to
+        # absorb burst arrivals without underflow.
+        self._last_arrival_t: float = 0.0
+        self.jitter_ms: float = 0.0          # EMA of |inter_arrival - frame_ms|
+        self._priming: bool = True           # waiting for buffer to reach target_depth
+        self.rtt_ms: float = 0.0             # set externally from PING/PONG (call.py)
+        self._packets_received: int = 0
+        self._packets_underflowed: int = 0   # rising-edge underflows (drained while in-call)
 
     def start(self) -> None:
         if sd is None or opuslib is None:
@@ -133,6 +145,13 @@ class AudioEngine:
         self._render_q.clear()
         self._silence_count = 0
         self._silence_gain = 1.0
+        # Reset adaptive jitter state so a re-call doesn't carry stats over.
+        self._last_arrival_t = 0.0
+        self.jitter_ms = 0.0
+        self._priming = True
+        self.rtt_ms = 0.0
+        self._packets_received = 0
+        self._packets_underflowed = 0
 
     @staticmethod
     def _dev(d):
@@ -140,9 +159,38 @@ class AudioEngine:
             return None
         return d
 
+    JITTER_EMA_ALPHA = 0.1               # higher = react faster, noisier
+    JITTER_DEPTH_MIN = 2
+    JITTER_DEPTH_MAX = 15
+
     def push_packet(self, opus_payload: bytes) -> None:
+        now = time.monotonic()
         with self._lock:
             self._jitter.append(opus_payload)
+            self._packets_received += 1
+            if self._last_arrival_t > 0.0:
+                # Deviation of inter-arrival from the expected frame interval.
+                dt_ms = (now - self._last_arrival_t) * 1000.0
+                deviation = abs(dt_ms - self.cfg.frame_ms)
+                self.jitter_ms = (
+                    (1.0 - self.JITTER_EMA_ALPHA) * self.jitter_ms
+                    + self.JITTER_EMA_ALPHA * deviation
+                )
+            self._last_arrival_t = now
+
+    @property
+    def target_depth(self) -> int:
+        """Adaptive prefill depth: covers measured jitter + safety frame."""
+        extra = math.ceil(self.jitter_ms / max(1, self.cfg.frame_ms))
+        return max(self.JITTER_DEPTH_MIN,
+                   min(self.JITTER_DEPTH_MAX, self.JITTER_DEPTH_MIN + extra))
+
+    @property
+    def loss_pct(self) -> float:
+        """Rough loss/underflow rate over the call lifetime (0..100)."""
+        if self._packets_received == 0:
+            return 0.0
+        return 100.0 * self._packets_underflowed / max(1, self._packets_received)
 
     SILENCE_GRACE_FRAMES = 5            # ~100 ms at 20 ms framing before fade starts
     SILENCE_FADE_PER_FRAME = 0.05       # gain step per silent frame (full mute in ~400 ms)
@@ -189,8 +237,24 @@ class AudioEngine:
     def _on_playback(self, outdata, frames, time, status):
         if status:
             log.debug("playback status: %s", status)
+        # Adaptive jitter buffer: while priming, output silence until the
+        # buffer reaches target_depth.  This absorbs network jitter without
+        # adding fixed latency on clean links.
         with self._lock:
-            payload = self._jitter.popleft() if self._jitter else None
+            buffered = len(self._jitter)
+            if self._priming:
+                if buffered >= self.target_depth:
+                    self._priming = False
+                    payload = self._jitter.popleft()
+                else:
+                    payload = None
+            else:
+                payload = self._jitter.popleft() if buffered > 0 else None
+                if payload is None:
+                    # Underflow: re-enter priming so the next frames don't
+                    # get a half-empty buffer and oscillate.
+                    self._priming = True
+                    self._packets_underflowed += 1
         if payload is None:
             self._jitter_misses += 1
             # Opus PLC is intended to bridge SHORT (1-3 frame) packet losses.
