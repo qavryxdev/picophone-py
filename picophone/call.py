@@ -64,6 +64,10 @@ class CallController(QObject):
         self._accepted_replies: dict[str, tuple] = {}        # cid -> (port, addr, nonce_b) for ACCEPT retransmits
         self._active_id: str | None = None
         self._active_peer: tuple | None = None
+        # Mute state lives on the controller (not the engine) so toggles
+        # made before a call connects persist when the engine is created.
+        self.muted: bool = False
+        self.spk_muted: bool = False
 
     # -------- lifecycle --------
 
@@ -168,8 +172,14 @@ class CallController(QObject):
         self._submit(self._end_call())
 
     def set_muted(self, muted: bool) -> None:
+        self.muted = muted
         if self._engine:
             self._engine.muted = muted
+
+    def set_spk_muted(self, muted: bool) -> None:
+        self.spk_muted = muted
+        if self._engine:
+            self._engine.spk_muted = muted
 
     def media_stats(self) -> dict:
         m = self._media
@@ -447,6 +457,10 @@ class CallController(QObject):
             else:
                 self.log_event.emit(f"Audio start failed: {e}")
             self._engine = None
+            return
+        # Apply mute toggles that the user flipped before the call connected.
+        self._engine.muted     = self.muted
+        self._engine.spk_muted = self.spk_muted
 
     def _on_audio_packet(self, payload: bytes) -> None:
         """PortAudio thread -> asyncio thread: build packet, send via signaling socket."""

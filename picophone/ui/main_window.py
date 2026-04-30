@@ -454,19 +454,20 @@ class MainWindow(QMainWindow):
             eng.out_boost_db = db
 
     def _toggle_mic_mute(self) -> None:
-        eng = getattr(self.ctrl, "_engine", None)
-        if eng is None:
-            return
-        eng.muted = not eng.muted
-        self.btn_off.setChecked(eng.muted)
-        self.mic_led.set_muted(eng.muted)
+        # Toggle mic mute regardless of whether an engine exists yet — the
+        # controller persists the flag and applies it when _open_media()
+        # builds the engine, so a pre-call mute actually mutes the call.
+        muted = not self.ctrl.muted
+        self.ctrl.set_muted(muted)
+        self.btn_off.blockSignals(True)
+        self.btn_off.setChecked(muted)
+        self.btn_off.blockSignals(False)
+        self.mic_led.set_muted(muted)
 
     def _toggle_spk_mute(self) -> None:
-        eng = getattr(self.ctrl, "_engine", None)
-        if eng is None:
-            return
-        eng.spk_muted = not eng.spk_muted
-        self.spk_led.set_muted(eng.spk_muted)
+        muted = not self.ctrl.spk_muted
+        self.ctrl.set_spk_muted(muted)
+        self.spk_led.set_muted(muted)
 
     def _on_off_toggle(self, on: bool) -> None:
         self.ctrl.set_muted(on)
