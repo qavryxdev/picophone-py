@@ -56,6 +56,7 @@ class CallController(QObject):
         self._pending: dict[str, _Pending] = {}
         self._keepalive_task: asyncio.Task | None = None
         self._last_pong: float = 0.0
+        self._last_ping_send_t: float = 0.0   # for RTT measurement on PONG
         self._pending_invites: dict[str, CallInvite] = {}
         self._ringing_tasks: dict[str, asyncio.Task] = {}    # cid -> ringing-watch keepalive
         self._ringing_pongs: dict[str, float] = {}           # cid -> last PONG monotonic time
@@ -172,6 +173,7 @@ class CallController(QObject):
 
     def media_stats(self) -> dict:
         m = self._media
+        e = self._engine
         return {
             "tx_pkts":  m.pkts_sent  if m else 0,
             "rx_pkts":  m.pkts_recv  if m else 0,
@@ -180,7 +182,10 @@ class CallController(QObject):
             "decrypt_fail": m.pkts_decrypt_fail if m else 0,
             "peer":    self._media_peer,
             "key_set": bool(self._sec.key),
-            "engine_running": self._engine is not None,
+            "engine_running": e is not None,
+            "rtt_ms":    e.rtt_ms    if e else 0.0,
+            "jitter_ms": e.jitter_ms if e else 0.0,
+            "loss_pct":  e.loss_pct  if e else 0.0,
         }
 
     # -------- async impl --------
@@ -394,6 +399,15 @@ class CallController(QObject):
         now = _t.monotonic()
         if call_id == self._active_id:
             self._last_pong = now
+            # Round-trip time: PONG just arrived, last PING send time was
+            # stamped in _keepalive_loop.  Smooth with a 30 % EMA so single
+            # outliers don't flicker the quality LED.
+            if self._last_ping_send_t > 0.0 and self._engine is not None:
+                rtt = (now - self._last_ping_send_t) * 1000.0
+                self._engine.rtt_ms = (
+                    0.7 * self._engine.rtt_ms + 0.3 * rtt
+                    if self._engine.rtt_ms > 0.0 else rtt
+                )
         if call_id in self._ringing_pongs:
             self._ringing_pongs[call_id] = now
 
@@ -512,6 +526,7 @@ class CallController(QObject):
                 await asyncio.sleep(self.KEEPALIVE_INTERVAL)
                 if not (self._active_id and self._active_peer and self._sig):
                     return
+                self._last_ping_send_t = _t.monotonic()
                 self._sig.ping(self._active_id, self._active_peer)
                 if _t.monotonic() - self._last_pong > self.KEEPALIVE_TIMEOUT:
                     self.log_event.emit("Connection lost (keepalive timeout)")

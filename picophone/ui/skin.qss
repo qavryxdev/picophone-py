@@ -64,3 +64,17 @@ QLabel#led            { background: #2a345a; border-radius: 6px; min-width: 12px
 QLabel#led[on="true"]    { background: #4ad06a; }
 QLabel#led[muted="true"] { background: #c83737; }
 QLabel#status         { color: #ffe09a; padding: 2px 6px; }
+
+/* Network quality readout next to the title bar. */
+QLabel#quality {
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #1c2240;
+    background: #6b7393;
+}
+QLabel#quality[level="off"]    { background: #6b7393; color: #cfd6ea; }
+QLabel#quality[level="green"]  { background: #4ad06a; color: #08210d; }
+QLabel#quality[level="yellow"] { background: #d8a13b; color: #1c2240; }
+QLabel#quality[level="red"]    { background: #c83737; color: #ffffff; }

@@ -52,6 +52,53 @@ class _LED(QLabel):
         super().mousePressEvent(e)
 
 
+class _QualityLED(QLabel):
+    """Color-coded RTT readout for the active call.
+
+    Green / yellow / red mapping:
+        green  : RTT < 50 ms   AND jitter < 10 ms AND loss < 1%
+        yellow : RTT < 150 ms  OR  jitter < 30 ms OR  loss < 5%
+        red    : worse, or no data yet
+    The visible label shows '— ms' when idle and '23 ms' (RTT, integer)
+    while in-call.  Hover for jitter + loss detail.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("— ms")
+        self.setObjectName("quality")
+        self.setProperty("level", "off")
+        self.setMinimumWidth(50)
+        self.setAlignment(Qt.AlignCenter)
+        self.setToolTip("Network quality (RTT)")
+
+    def update_metrics(self, rtt_ms: float, jitter_ms: float,
+                       loss_pct: float, engine_running: bool) -> None:
+        if not engine_running or rtt_ms <= 0.0:
+            self._set_level("off")
+            self.setText("— ms")
+            self.setToolTip("Network quality — no active call")
+            return
+        if rtt_ms < 50.0 and jitter_ms < 10.0 and loss_pct < 1.0:
+            level = "green"
+        elif rtt_ms < 150.0 and jitter_ms < 30.0 and loss_pct < 5.0:
+            level = "yellow"
+        else:
+            level = "red"
+        self._set_level(level)
+        self.setText(f"{int(round(rtt_ms))} ms")
+        self.setToolTip(
+            f"RTT: {rtt_ms:.0f} ms\n"
+            f"Jitter: {jitter_ms:.1f} ms\n"
+            f"Loss: {loss_pct:.1f} %"
+        )
+
+    def _set_level(self, level: str) -> None:
+        if self.property("level") == level:
+            return
+        self.setProperty("level", level)
+        self.style().unpolish(self); self.style().polish(self)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cfg: Config, controller: CallController) -> None:
         super().__init__()
@@ -99,6 +146,8 @@ class MainWindow(QMainWindow):
         title = QHBoxLayout()
         self.title_lbl = QLabel(f"PicoPhone-Py — {self.cfg.net.identity}", objectName="title")
         title.addWidget(self.title_lbl, 1)
+        self.quality_led = _QualityLED()
+        title.addWidget(self.quality_led)
         self.btn_min = QToolButton(text="_")
         self.btn_close = QToolButton(text="X")
         for b in (self.btn_min, self.btn_close):
@@ -441,6 +490,7 @@ class MainWindow(QMainWindow):
             self.mic_bar.setValue(0); self.spk_bar.setValue(0)
             self.mic_led.set_on(False); self.spk_led.set_on(False)
             self.lbl_tx.setText("TX:0.0k"); self.lbl_rx.setText("RX:0.0k")
+            self.quality_led.update_metrics(0.0, 0.0, 0.0, False)
             return
         mic = _rms_to_pct(eng.tx_rms)
         spk = _rms_to_pct(eng.rx_rms)
@@ -449,6 +499,14 @@ class MainWindow(QMainWindow):
         self.spk_led.set_on(spk > 5)
 
         stats = self.ctrl.media_stats()
+        # Quality LED refreshes on every tick (cheap) so the user sees RTT
+        # bumps quickly; bandwidth + tooltips throttle below.
+        self.quality_led.update_metrics(
+            stats.get("rtt_ms", 0.0),
+            stats.get("jitter_ms", 0.0),
+            stats.get("loss_pct", 0.0),
+            stats.get("engine_running", False),
+        )
         now = _t.monotonic()
         if self._prev_stats is None:
             self._prev_stats = stats; self._prev_stats_t = now
