@@ -14,8 +14,8 @@ from picophone.net.media import MediaSecurity, MediaSession, new_ssrc
 def main() -> None:
     received: list[bytes] = []
     sec = MediaSecurity(key=os.urandom(16))
-    a = MediaSession(new_ssrc(), sec, lambda _p: None)
-    b = MediaSession(new_ssrc(), sec, lambda p: received.append(p))
+    a = MediaSession(new_ssrc(), sec, lambda _seq, _p: None)
+    b = MediaSession(new_ssrc(), sec, lambda _seq, p: received.append(p))
 
     N = 50
     for i in range(N):

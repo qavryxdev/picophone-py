@@ -84,7 +84,12 @@ class AudioEngine:
         self._dec = None
         self._aec: Aec = NullAec()
         self._post = None             # neural post-processor (DFN), exclusive with AEC
-        self._jitter: deque[bytes] = deque(maxlen=64)
+        # Each entry is (seq_or_None, payload).  seq is set by the network
+        # path so the playback loop can detect gaps and call Opus FEC
+        # recovery; legacy callers that don't track seq pass None and the
+        # FEC path is skipped (gracefully degrades to plain decode + PLC).
+        self._jitter: deque[tuple[int | None, bytes]] = deque(maxlen=64)
+        self._last_played_seq: int | None = None
         self._jitter_misses = 0          # consecutive empty popleft attempts
         self._render_q: deque[np.ndarray] = deque(maxlen=8)   # ~160ms at 20ms frames
         self._lock = threading.Lock()
@@ -112,6 +117,19 @@ class AudioEngine:
         rate = self.cfg.sample_rate_hz
         self._enc = opuslib.Encoder(rate, 1, opuslib.APPLICATION_VOIP)
         self._enc.bitrate = self.cfg.opus_bitrate_bps
+        # In-band Forward Error Correction: encoder embeds redundant data
+        # for the previous frame so a single-packet loss can be recovered
+        # by calling decoder.decode(..., decode_fec=True) on the next one.
+        # 5% expected loss is the Opus default sweet spot — higher values
+        # spend more bits on FEC.  opuslib's high-level @property setters
+        # (.inband_fec = 1) miscall the underlying ctl helper in current
+        # releases, so we reach through to the C ctl directly.
+        try:
+            from opuslib.api import encoder as _enc_api, ctl as _ctl
+            _enc_api.encoder_ctl(self._enc.encoder_state, _ctl.set_inband_fec, 1)
+            _enc_api.encoder_ctl(self._enc.encoder_state, _ctl.set_packet_loss_perc, 5)
+        except Exception:  # noqa: BLE001
+            log.debug("Opus FEC settings rejected by encoder; continuing")
         self._dec = opuslib.Decoder(rate, 1)
         # AEC and DFN3 are independent: AEC removes the speaker -> mic echo
         # path, DFN3 then denoises whatever residue is left.  Either or
@@ -152,6 +170,7 @@ class AudioEngine:
         self.rtt_ms = 0.0
         self._packets_received = 0
         self._packets_underflowed = 0
+        self._last_played_seq = None
 
     @staticmethod
     def _dev(d):
@@ -163,10 +182,10 @@ class AudioEngine:
     JITTER_DEPTH_MIN = 2
     JITTER_DEPTH_MAX = 15
 
-    def push_packet(self, opus_payload: bytes) -> None:
+    def push_packet(self, opus_payload: bytes, seq: int | None = None) -> None:
         now = time.monotonic()
         with self._lock:
-            self._jitter.append(opus_payload)
+            self._jitter.append((seq, opus_payload))
             self._packets_received += 1
             if self._last_arrival_t > 0.0:
                 # Deviation of inter-arrival from the expected frame interval.
@@ -240,22 +259,23 @@ class AudioEngine:
         # Adaptive jitter buffer: while priming, output silence until the
         # buffer reaches target_depth.  This absorbs network jitter without
         # adding fixed latency on clean links.
+        entry: tuple[int | None, bytes] | None
         with self._lock:
             buffered = len(self._jitter)
             if self._priming:
                 if buffered >= self.target_depth:
                     self._priming = False
-                    payload = self._jitter.popleft()
+                    entry = self._jitter.popleft()
                 else:
-                    payload = None
+                    entry = None
             else:
-                payload = self._jitter.popleft() if buffered > 0 else None
-                if payload is None:
+                entry = self._jitter.popleft() if buffered > 0 else None
+                if entry is None:
                     # Underflow: re-enter priming so the next frames don't
                     # get a half-empty buffer and oscillate.
                     self._priming = True
                     self._packets_underflowed += 1
-        if payload is None:
+        if entry is None:
             self._jitter_misses += 1
             # Opus PLC is intended to bridge SHORT (1-3 frame) packet losses.
             # Once the peer goes silent for longer (their VAD dropped frames,
@@ -271,8 +291,35 @@ class AudioEngine:
                 return
             pcm = self._dec.decode(b"", self._frame_samples, decode_fec=False)
         else:
+            seq, payload = entry
             self._jitter_misses = 0
-            pcm = self._dec.decode(payload, self._frame_samples, decode_fec=False)
+            recovered_via_fec = False
+            # Opus FEC recovery: if seq jumped exactly 1 (one packet dropped
+            # between this one and the previous played) and the encoder was
+            # told to embed FEC info, decode_fec=True on the *current* packet
+            # recovers the *previous* missing frame's audio.  We then push
+            # the current payload back to the front of the queue so it plays
+            # normally on the next callback (1 frame extra latency, ~20 ms).
+            if (seq is not None and self._last_played_seq is not None
+                    and self._dec is not None):
+                gap = (seq - self._last_played_seq - 1) & 0xFFFF
+                if gap == 1:
+                    try:
+                        pcm = self._dec.decode(
+                            payload, self._frame_samples, decode_fec=True
+                        )
+                        with self._lock:
+                            self._jitter.appendleft((seq, payload))
+                        # We just played the lost slot's recovered audio;
+                        # advance played-seq by one and count the loss.
+                        self._last_played_seq = (self._last_played_seq + 1) & 0xFFFF
+                        self._packets_underflowed += 1
+                        recovered_via_fec = True
+                    except Exception:  # noqa: BLE001
+                        log.debug("FEC recovery failed; falling through")
+            if not recovered_via_fec:
+                pcm = self._dec.decode(payload, self._frame_samples, decode_fec=False)
+                self._last_played_seq = seq
         arr = np.frombuffer(pcm, dtype=np.int16)
         if arr.size < frames:
             arr = np.pad(arr, (0, frames - arr.size))

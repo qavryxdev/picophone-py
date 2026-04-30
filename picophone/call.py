@@ -472,9 +472,9 @@ class CallController(QObject):
                      addr, len(data), data[0])
         self._media.feed(data)
 
-    def _on_media_payload(self, payload: bytes) -> None:
+    def _on_media_payload(self, seq: int, payload: bytes) -> None:
         if self._engine:
-            self._engine.push_packet(payload)
+            self._engine.push_packet(payload, seq=seq)
 
     # -------- helpers --------
 

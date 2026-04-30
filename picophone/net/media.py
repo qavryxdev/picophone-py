@@ -30,7 +30,7 @@ NONCE_LEN = 12
 # to dispatch.
 RTP_FIRST_BYTE = (RTP_VERSION << 6) | (PT_OPUS & 0x7F)
 
-PayloadCallback = Callable[[bytes], None]
+PayloadCallback = Callable[[int, bytes], None]   # (seq, opus_payload)
 
 
 def is_media_datagram(data: bytes) -> bool:
@@ -96,7 +96,11 @@ class MediaSession:
             self.pkts_decrypt_fail += 1
             log.debug("decrypt failed (%d B blob)", len(data))
             return
-        self.on_payload(payload)
+        # Sequence number sits at bytes 2-3 of the RTP-like header (BBHII).
+        # Pass it alongside the payload so the audio engine can detect gaps
+        # and run Opus FEC recovery on the next-arriving packet.
+        seq = struct.unpack("!H", hdr[2:4])[0]
+        self.on_payload(seq, payload)
 
 
 def new_ssrc() -> int:

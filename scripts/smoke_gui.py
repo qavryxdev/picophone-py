@@ -14,10 +14,11 @@ import picophone.call as _call
 class _StubEngine:
     def __init__(self, *_a, **_k):
         self.muted = False; self.tx_rms = 0.0; self.rx_rms = 0.0
+        self.rtt_ms = 0.0; self.jitter_ms = 0.0; self.loss_pct = 0.0
         self._frame_samples = 960
     def start(self): pass
     def stop(self):  pass
-    def push_packet(self, _p): pass
+    def push_packet(self, _p, *, seq=None): pass
 
 
 _call.AudioEngine = _StubEngine  # type: ignore[assignment]

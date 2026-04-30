@@ -28,6 +28,9 @@ class FakeEngine:
         self.muted = False
         self.tx_rms = 0.5
         self.rx_rms = 0.0
+        self.rtt_ms = 0.0
+        self.jitter_ms = 0.0
+        self.loss_pct = 0.0
         self._frame_samples = 960
         self.on_packet = _a[1] if len(_a) >= 2 else _k.get("on_packet")
         self._stop = threading.Event()
@@ -49,7 +52,7 @@ class FakeEngine:
         if self._t:
             self._t.join(timeout=1.0)
 
-    def push_packet(self, _p):
+    def push_packet(self, _p, *, seq=None):
         self.received += 1
         self.rx_rms = 0.3
 
