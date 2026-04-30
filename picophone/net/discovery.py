@@ -51,12 +51,15 @@ def _best_local_ipv4() -> str:
 
 class Discovery:
     def __init__(self, identity: str, port: int,
-                 on_added: PeerAdded, on_removed: PeerRemoved) -> None:
+                 on_added: PeerAdded, on_removed: PeerRemoved,
+                 host_override: str | None = None) -> None:
         self.identity   = identity
         self.port       = port
         self.on_added   = on_added
         self.on_removed = on_removed
-        self.host       = _best_local_ipv4()
+        # host_override comes from the STUN client when NAT traversal is on.
+        # When unset we fall back to the LAN-only RFC1918 address.
+        self.host       = host_override or _best_local_ipv4()
 
         self._stop = threading.Event()
         self._peers: dict[str, tuple[str, int, float]] = {}   # identity -> (host, port, last_seen)

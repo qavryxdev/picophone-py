@@ -44,6 +44,12 @@ class NetCfg:
     encrypt: bool = True
     mdns: bool = True
     contacts: list[str] = field(default_factory=list)
+    # NAT traversal: when enabled, ask the configured STUN server for our
+    # outward-facing IP+port and advertise that to peers (instead of the
+    # LAN-only RFC1918 address).  Off by default — only useful when calling
+    # over the public internet.
+    stun_enabled: bool = False
+    stun_server: str = "stun.l.google.com:19302"
 
 
 @dataclass

@@ -94,6 +94,26 @@ class CallController(QObject):
             )
         except OSError as e:
             log.error("Cannot bind signaling port %d: %s", self.cfg.net.port, e)
+        # Optional STUN lookup: blocks for up to ~2 s, so run it on the
+        # default executor.  We use the result only as a host_override for
+        # discovery — if the lookup fails we fall back to the LAN IP.
+        host_override: str | None = None
+        if self.cfg.net.stun_enabled:
+            try:
+                from picophone.net.stun import discover_public
+                loop = asyncio.get_running_loop()
+                public = await loop.run_in_executor(
+                    None, discover_public, self.cfg.net.stun_server, 2.0
+                )
+                if public:
+                    host_override = public[0]
+                    log.info("STUN: public addr %s:%d", public[0], public[1])
+                    self.log_event.emit(f"Public IP: {public[0]}")
+                else:
+                    log.info("STUN: no reply from %s; advertising LAN IP",
+                             self.cfg.net.stun_server)
+            except Exception:
+                log.exception("STUN lookup failed")
         if self.cfg.net.mdns:
             try:
                 from picophone.net.discovery import Discovery
@@ -101,6 +121,7 @@ class CallController(QObject):
                     self.cfg.net.identity, self.cfg.net.port,
                     on_added=lambda i, h, p: self.peer_discovered.emit(i, h, p),
                     on_removed=lambda i: self.peer_lost.emit(i),
+                    host_override=host_override,
                 )
             except Exception:
                 log.exception("mDNS discovery failed to start")

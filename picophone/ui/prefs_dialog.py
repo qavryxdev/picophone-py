@@ -68,6 +68,14 @@ class PrefsDialog(QDialog):
         self.cb_log        = QCheckBox("Write picophone.log file")
         self.cb_tray       = QCheckBox("Minimize to system tray (background)")
         self.cb_autostart  = QCheckBox("Start with Windows (minimized to tray)")
+        self.cb_stun       = QCheckBox("STUN — discover public IP for internet calls")
+        self.cb_stun.setToolTip(
+            "Ask a STUN server for our outward-facing IP at startup so peers "
+            "behind different NATs can call us.  Off by default — leave it "
+            "off for LAN-only use."
+        )
+        self.ed_stun_server = QLineEdit()
+        self.ed_stun_server.setPlaceholderText("stun.l.google.com:19302")
         f.addRow("Identity:", self.ed_identity)
         f.addRow("Port:",     self.sb_port)
         f.addRow(self.cb_v6)
@@ -76,6 +84,8 @@ class PrefsDialog(QDialog):
         f.addRow(self.cb_log)
         f.addRow(self.cb_tray)
         f.addRow(self.cb_autostart)
+        f.addRow(self.cb_stun)
+        f.addRow("STUN server:", self.ed_stun_server)
         # Autostart implies tray (otherwise the auto-launched window pops up
         # in the user's face on every login).
         self.cb_autostart.toggled.connect(lambda on: on and self.cb_tray.setChecked(True))
@@ -155,6 +165,8 @@ class PrefsDialog(QDialog):
         self.cb_v6.setChecked(n.bind_v6)
         self.cb_autoanswer.setChecked(n.autoanswer)
         self.cb_mdns.setChecked(n.mdns)
+        self.cb_stun.setChecked(n.stun_enabled)
+        self.ed_stun_server.setText(n.stun_server)
         self.cb_log.setChecked(self.cfg.ui.generate_log)
         self.cb_tray.setChecked(self.cfg.ui.minimize_to_tray)
         from picophone import autostart
@@ -192,6 +204,8 @@ class PrefsDialog(QDialog):
         n.bind_v6    = self.cb_v6.isChecked()
         n.autoanswer = self.cb_autoanswer.isChecked()
         n.mdns       = self.cb_mdns.isChecked()
+        n.stun_enabled = self.cb_stun.isChecked()
+        n.stun_server  = self.ed_stun_server.text().strip() or "stun.l.google.com:19302"
 
         a.record_device   = self.cb_in.currentData()
         a.play_device     = self.cb_out.currentData()
